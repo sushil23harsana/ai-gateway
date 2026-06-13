@@ -1,0 +1,74 @@
+# Local infra + gateway. `docker compose up` brings up redis, postgres, runs
+# migrations once, then starts the gateway. Values interpolate from a local
+# .env if present (see .env.example) and fall back to dev-safe defaults.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      # Host port is configurable to avoid clashes with a local/other Redis.
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gw
+      POSTGRES_PASSWORD: gw
+      POSTGRES_DB: aigateway
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gw -d aigateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: applies pending migrations, then exits 0.
+  migrate:
+    build: .
+    entrypoint: ["/app/migrate"]
+    environment:
+      DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
+      PRICING_PATH: /app/pricing.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  pgdata:

@@ -1,0 +1,26 @@
+# Secrets / local env
+.env
+
+# Go build output (anchored to repo root so they don't match cmd/gateway, cmd/migrate)
+/bin/
+/out/
+*.exe
+/gateway
+/migrate
+
+# Test / coverage
+*.out
+coverage.*
+
+# Dashboard (Next.js)
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code harness artifacts
+.claude/
