@@ -38,6 +38,7 @@ type APIKey struct {
 	RateLimitRPM     int
 	CreatedAt        time.Time
 	Disabled         bool
+	CacheEnabled     bool
 }
 
 // Store wraps a pgx connection pool.
@@ -86,14 +87,14 @@ func (s *Store) InsertRequestLog(ctx context.Context, rl RequestLog) error {
 }
 
 // InsertAPIKey creates a virtual key (storing only the hash) and returns the row.
-func (s *Store) InsertAPIKey(ctx context.Context, name, keyHash string, rateLimitRPM int, monthlyBudgetUSD *float64) (APIKey, error) {
+func (s *Store) InsertAPIKey(ctx context.Context, name, keyHash string, rateLimitRPM int, monthlyBudgetUSD *float64, cacheEnabled bool) (APIKey, error) {
 	const q = `
-		INSERT INTO api_keys (name, key_hash, rate_limit_rpm, monthly_budget_usd)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id::text, name, key_hash, rate_limit_rpm, monthly_budget_usd, created_at, disabled`
+		INSERT INTO api_keys (name, key_hash, rate_limit_rpm, monthly_budget_usd, cache_enabled)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id::text, name, key_hash, rate_limit_rpm, monthly_budget_usd, created_at, disabled, cache_enabled`
 	var k APIKey
-	err := s.pool.QueryRow(ctx, q, name, keyHash, rateLimitRPM, monthlyBudgetUSD).
-		Scan(&k.ID, &k.Name, &k.KeyHash, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled)
+	err := s.pool.QueryRow(ctx, q, name, keyHash, rateLimitRPM, monthlyBudgetUSD, cacheEnabled).
+		Scan(&k.ID, &k.Name, &k.KeyHash, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled, &k.CacheEnabled)
 	if err != nil {
 		return APIKey{}, fmt.Errorf("insert api_key: %w", err)
 	}
@@ -104,11 +105,11 @@ func (s *Store) InsertAPIKey(ctx context.Context, name, keyHash string, rateLimi
 // (with nil error) when no row matches.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, keyHash string) (APIKey, bool, error) {
 	const q = `
-		SELECT id::text, name, key_hash, rate_limit_rpm, monthly_budget_usd, created_at, disabled
+		SELECT id::text, name, key_hash, rate_limit_rpm, monthly_budget_usd, created_at, disabled, cache_enabled
 		FROM api_keys WHERE key_hash = $1`
 	var k APIKey
 	err := s.pool.QueryRow(ctx, q, keyHash).
-		Scan(&k.ID, &k.Name, &k.KeyHash, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled)
+		Scan(&k.ID, &k.Name, &k.KeyHash, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled, &k.CacheEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return APIKey{}, false, nil
 	}
@@ -121,7 +122,7 @@ func (s *Store) GetAPIKeyByHash(ctx context.Context, keyHash string) (APIKey, bo
 // ListAPIKeys returns all keys (without the hash) for the admin list endpoint.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	const q = `
-		SELECT id::text, name, rate_limit_rpm, monthly_budget_usd, created_at, disabled
+		SELECT id::text, name, rate_limit_rpm, monthly_budget_usd, created_at, disabled, cache_enabled
 		FROM api_keys ORDER BY created_at DESC`
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -132,7 +133,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	var out []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.Name, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled, &k.CacheEnabled); err != nil {
 			return nil, err
 		}
 		out = append(out, k)

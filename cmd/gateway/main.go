@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/sushil23harsana/ai-gateway/internal/api"
+	"github.com/sushil23harsana/ai-gateway/internal/cache"
 	"github.com/sushil23harsana/ai-gateway/internal/config"
 	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/metrics"
@@ -91,7 +92,9 @@ func run() error {
 
 	openai := providers.NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey)
 	upstream := &http.Client{Timeout: time.Duration(cfg.UpstreamTimeoutSeconds) * time.Second}
-	proxyHandler := proxy.NewHandler(upstream, openai, cfg.Pricing, mlogger, logger)
+	respCache := cache.New(rdb, cfg.CacheTTLSeconds, cfg.CacheScope, cfg.CacheMaxBytes, cfg.CacheEnabled, logger)
+	logger.Info("response cache", "enabled", respCache.Enabled(), "scope", string(respCache.Scope()), "ttl_seconds", cfg.CacheTTLSeconds)
+	proxyHandler := proxy.NewHandler(upstream, openai, cfg.Pricing, mlogger, respCache, logger)
 
 	authenticator := keys.NewAuthenticator(st, logger)
 	limiter := ratelimit.NewLimiter(rdb)

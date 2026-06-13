@@ -19,8 +19,8 @@ type fakeKeyStore struct {
 	list     []store.APIKey
 }
 
-func (f *fakeKeyStore) InsertAPIKey(_ context.Context, name, keyHash string, rpm int, budget *float64) (store.APIKey, error) {
-	f.inserted = store.APIKey{ID: "k1", Name: name, KeyHash: keyHash, RateLimitRPM: rpm, MonthlyBudgetUSD: budget}
+func (f *fakeKeyStore) InsertAPIKey(_ context.Context, name, keyHash string, rpm int, budget *float64, cacheEnabled bool) (store.APIKey, error) {
+	f.inserted = store.APIKey{ID: "k1", Name: name, KeyHash: keyHash, RateLimitRPM: rpm, MonthlyBudgetUSD: budget, CacheEnabled: cacheEnabled}
 	return f.inserted, nil
 }
 

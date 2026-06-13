@@ -1,18 +1,20 @@
-// Package proxy implements the gateway's request lifecycle. It forwards
-// POST /v1/chat/completions to OpenAI (injecting the real key server-side),
-// relays the response, and records an async request_logs entry with the
-// authenticated key id, tokens, cost, latency, and status. The response path
+// Package proxy implements the gateway's request lifecycle. It checks the
+// response cache, and on a miss forwards POST /v1/chat/completions to OpenAI
+// (injecting the real key server-side), relays the response, records an async
+// request_logs entry, and stores the response in the cache. The response path
 // never blocks on the log write.
 package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/sushil23harsana/ai-gateway/internal/cache"
 	"github.com/sushil23harsana/ai-gateway/internal/config"
 	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
@@ -30,18 +32,28 @@ type LogSink interface {
 	Enqueue(store.RequestLog)
 }
 
+// ResponseCache is the response-cache behavior the handler needs. *cache.Cache
+// satisfies it; tests use a fake.
+type ResponseCache interface {
+	Enabled() bool
+	Key(apiKeyID, provider string, body []byte) (string, bool)
+	Get(ctx context.Context, key string) (*cache.Entry, bool, error)
+	Set(ctx context.Context, key string, e cache.Entry) error
+}
+
 // Handler forwards chat-completions traffic to OpenAI and logs the outcome.
 type Handler struct {
 	client  *http.Client
 	openai  *providers.OpenAI
 	pricing config.Pricing
 	sink    LogSink
+	cache   ResponseCache
 	log     *slog.Logger
 }
 
 // NewHandler wires the proxy dependencies.
-func NewHandler(client *http.Client, openai *providers.OpenAI, pricing config.Pricing, sink LogSink, log *slog.Logger) *Handler {
-	return &Handler{client: client, openai: openai, pricing: pricing, sink: sink, log: log}
+func NewHandler(client *http.Client, openai *providers.OpenAI, pricing config.Pricing, sink LogSink, c ResponseCache, log *slog.Logger) *Handler {
+	return &Handler{client: client, openai: openai, pricing: pricing, sink: sink, cache: c, log: log}
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -50,8 +62,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Authenticated virtual key (set by the auth middleware) → request_logs.api_key_id.
 	var apiKeyID *string
+	var keyCacheEnabled bool
 	if id, ok := keys.IdentityFrom(r.Context()); ok {
 		apiKeyID = &id.ID
+		keyCacheEnabled = id.CacheEnabled
 	}
 
 	if h.openai.APIKey() == "" {
@@ -72,6 +86,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &meta)
 
+	// Cache lookup (non-streaming, caching enabled globally and for this key).
+	var cacheKey string
+	if h.cache.Enabled() && keyCacheEnabled && !meta.Stream {
+		if k, ok := h.cache.Key(deref(apiKeyID), h.openai.Name(), body); ok {
+			cacheKey = k
+			if entry, hit, gerr := h.cache.Get(r.Context(), cacheKey); gerr != nil {
+				h.log.Warn("cache get failed; treating as miss", "err", gerr)
+			} else if hit {
+				h.serveFromCache(w, start, apiKeyID, entry)
+				return
+			}
+		}
+	}
+
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.openai.ChatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
 		h.fail(w, start, apiKeyID, meta.Model, http.StatusInternalServerError, err)
@@ -90,7 +118,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Streaming (SSE): pass through; mid-stream token accounting is a Phase 6 item.
+	// Streaming (SSE): pass through; mid-stream token accounting + caching is Phase 6.
 	if meta.Stream {
 		h.relayStream(w, resp, start, apiKeyID, meta.Model)
 		return
@@ -104,7 +132,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	latency := time.Since(start)
 
 	// Relay the upstream response verbatim.
-	w.Header().Set("Content-Type", contentTypeOr(resp, "application/json"))
+	ct := contentTypeOr(resp, "application/json")
+	w.Header().Set("Content-Type", ct)
+	if cacheKey != "" {
+		w.Header().Set("X-Cache", "MISS")
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 
@@ -147,6 +179,45 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rl.Error = &e
 	}
 	h.sink.Enqueue(rl)
+
+	// Store successful responses in the cache (after the client already has the body).
+	if cacheKey != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if serr := h.cache.Set(r.Context(), cacheKey, cache.Entry{
+			Status:      resp.StatusCode,
+			ContentType: ct,
+			Body:        string(respBody),
+			Model:       model,
+			TokensIn:    tokensIn,
+			TokensOut:   tokensOut,
+		}); serr != nil {
+			h.log.Warn("cache set failed", "err", serr)
+		}
+	}
+}
+
+// serveFromCache returns a cached response and logs a cache hit (cost 0 — no
+// provider call was made).
+func (h *Handler) serveFromCache(w http.ResponseWriter, start time.Time, apiKeyID *string, e *cache.Entry) {
+	ct := e.ContentType
+	if ct == "" {
+		ct = "application/json"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Cache", "HIT")
+	w.WriteHeader(e.Status)
+	_, _ = io.WriteString(w, e.Body)
+
+	h.sink.Enqueue(store.RequestLog{
+		APIKeyID:  apiKeyID,
+		Provider:  h.openai.Name(),
+		Model:     e.Model,
+		Status:    e.Status,
+		CacheHit:  true,
+		TokensIn:  e.TokensIn,
+		TokensOut: e.TokensOut,
+		CostUSD:   0, // served from cache — no provider charge
+		LatencyMs: int(time.Since(start).Milliseconds()),
+	})
 }
 
 // relayStream copies an SSE response straight through to the client, flushing as
@@ -194,6 +265,13 @@ func (h *Handler) fail(w http.ResponseWriter, start time.Time, apiKeyID *string,
 		Error:     &msg,
 	})
 	writeJSONError(w, status, msg)
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func contentTypeOr(resp *http.Response, fallback string) string {

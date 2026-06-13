@@ -34,6 +34,9 @@ type Config struct {
 
 	// Cache
 	CacheTTLSeconds int
+	CacheEnabled    bool   // global response-cache toggle
+	CacheScope      string // "key" (per-virtual-key, isolated) | "global" (shared)
+	CacheMaxBytes   int    // responses larger than this are not cached
 
 	// Pricing table (loaded from PricingPath).
 	PricingPath string
@@ -78,6 +81,9 @@ func Load() (*Config, error) {
 		RedisURL:        getenv("REDIS_URL", "redis://localhost:6379"),
 		DatabaseURL:     getenv("DATABASE_URL", "postgres://gw:gw@localhost:5432/aigateway?sslmode=disable"),
 		CacheTTLSeconds: getenvInt("CACHE_TTL_SECONDS", 3600),
+		CacheEnabled:    getenvBool("CACHE_ENABLED", true),
+		CacheScope:      getenv("CACHE_SCOPE", "key"),
+		CacheMaxBytes:   getenvInt("CACHE_MAX_BYTES", 1<<20),
 		PricingPath:     getenv("PRICING_PATH", "pricing.yaml"),
 	}
 
@@ -130,6 +136,19 @@ func getenvInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func getenvBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		slog.Warn("invalid bool env var; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return b
 }
 
 func parseLevel(s string) slog.Level {

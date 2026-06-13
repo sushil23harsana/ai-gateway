@@ -42,6 +42,7 @@ type Identity struct {
 	ID           string
 	Name         string
 	RateLimitRPM int
+	CacheEnabled bool
 }
 
 type ctxKey struct{}
@@ -96,7 +97,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "api key disabled")
 			return
 		}
-		ctx := WithIdentity(r.Context(), Identity{ID: rec.ID, Name: rec.Name, RateLimitRPM: rec.RateLimitRPM})
+		ctx := WithIdentity(r.Context(), Identity{ID: rec.ID, Name: rec.Name, RateLimitRPM: rec.RateLimitRPM, CacheEnabled: rec.CacheEnabled})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

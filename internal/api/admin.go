@@ -20,7 +20,7 @@ const defaultRateLimitRPM = 60
 
 // KeyStore is the slice of the store the admin key endpoints need.
 type KeyStore interface {
-	InsertAPIKey(ctx context.Context, name, keyHash string, rateLimitRPM int, monthlyBudgetUSD *float64) (store.APIKey, error)
+	InsertAPIKey(ctx context.Context, name, keyHash string, rateLimitRPM int, monthlyBudgetUSD *float64, cacheEnabled bool) (store.APIKey, error)
 	ListAPIKeys(ctx context.Context) ([]store.APIKey, error)
 }
 
@@ -39,6 +39,7 @@ type createKeyRequest struct {
 	Name             string   `json:"name"`
 	RateLimitRPM     int      `json:"rate_limit_rpm"`
 	MonthlyBudgetUSD *float64 `json:"monthly_budget_usd"`
+	CacheEnabled     *bool    `json:"cache_enabled"` // optional; defaults to true
 }
 
 type createKeyResponse struct {
@@ -47,6 +48,7 @@ type createKeyResponse struct {
 	Key              string   `json:"key"` // raw key — returned once, never again
 	RateLimitRPM     int      `json:"rate_limit_rpm"`
 	MonthlyBudgetUSD *float64 `json:"monthly_budget_usd,omitempty"`
+	CacheEnabled     bool     `json:"cache_enabled"`
 	Warning          string   `json:"warning"`
 }
 
@@ -56,6 +58,7 @@ type keyView struct {
 	Name             string    `json:"name"`
 	RateLimitRPM     int       `json:"rate_limit_rpm"`
 	MonthlyBudgetUSD *float64  `json:"monthly_budget_usd,omitempty"`
+	CacheEnabled     bool      `json:"cache_enabled"`
 	Disabled         bool      `json:"disabled"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -75,6 +78,10 @@ func (a *KeyAdmin) Create(w http.ResponseWriter, r *http.Request) {
 	if req.RateLimitRPM <= 0 {
 		req.RateLimitRPM = defaultRateLimitRPM
 	}
+	cacheEnabled := true
+	if req.CacheEnabled != nil {
+		cacheEnabled = *req.CacheEnabled
+	}
 
 	raw, hash, err := keys.Generate()
 	if err != nil {
@@ -83,7 +90,7 @@ func (a *KeyAdmin) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := a.store.InsertAPIKey(r.Context(), req.Name, hash, req.RateLimitRPM, req.MonthlyBudgetUSD)
+	rec, err := a.store.InsertAPIKey(r.Context(), req.Name, hash, req.RateLimitRPM, req.MonthlyBudgetUSD, cacheEnabled)
 	if err != nil {
 		a.log.Error("failed to insert api key", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to create key")
@@ -96,6 +103,7 @@ func (a *KeyAdmin) Create(w http.ResponseWriter, r *http.Request) {
 		Key:              raw,
 		RateLimitRPM:     rec.RateLimitRPM,
 		MonthlyBudgetUSD: rec.MonthlyBudgetUSD,
+		CacheEnabled:     rec.CacheEnabled,
 		Warning:          "store this key now — it will not be shown again",
 	})
 }
@@ -115,6 +123,7 @@ func (a *KeyAdmin) List(w http.ResponseWriter, r *http.Request) {
 			Name:             k.Name,
 			RateLimitRPM:     k.RateLimitRPM,
 			MonthlyBudgetUSD: k.MonthlyBudgetUSD,
+			CacheEnabled:     k.CacheEnabled,
 			Disabled:         k.Disabled,
 			CreatedAt:        k.CreatedAt,
 		})
