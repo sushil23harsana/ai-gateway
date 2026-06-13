@@ -21,7 +21,8 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
       config loader (`slog`, graceful shutdown), DB migrations, `GET /healthz`.
 - [x] **Phase 1 — Pass-through proxy + observability:** `POST /v1/chat/completions`
       → OpenAI (key injected server-side), async `request_logs` with tokens, cost, latency.
-- [ ] **Phase 2 — Virtual keys + rate limiting** (Redis token bucket).
+- [x] **Phase 2 — Virtual keys + rate limiting:** admin API mints keys (hash stored,
+      raw shown once), Bearer auth on the proxy, Redis token-bucket limiter (429 + `Retry-After`).
 - [ ] **Phase 3 — Response caching.**
 - [ ] **Phase 4 — Multi-provider + routing/failover.**
 - [ ] **Phase 5 — Next.js dashboard.**

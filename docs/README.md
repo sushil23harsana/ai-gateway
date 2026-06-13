@@ -10,7 +10,7 @@ The full spec is in [BUILD.md](../BUILD.md).
 |-------|-----|---------|
 | 0 | [phase-0.md](phase-0.md) | Scaffold: repo layout, Docker Compose (redis + postgres), config loader, migrations, `GET /healthz`. |
 | 1 | [phase-1.md](phase-1.md) | Core proxy: `POST /v1/chat/completions` → OpenAI, async `request_logs` with tokens/cost/latency. |
-| 2 | _pending_ | Virtual keys + Redis token-bucket rate limiting. |
+| 2 | [phase-2.md](phase-2.md) | Virtual keys (hashed) + admin API to mint them + Redis token-bucket rate limiting. |
 | 3 | _pending_ | Response caching. |
 | 4 | _pending_ | Multi-provider (OpenAI + Anthropic) + routing/failover. |
 | 5 | _pending_ | Next.js dashboard. |

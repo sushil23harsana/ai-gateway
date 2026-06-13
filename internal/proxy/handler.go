@@ -1,8 +1,8 @@
-// Package proxy implements the gateway's request lifecycle. In Phase 1 it does
-// the core job: forward POST /v1/chat/completions to OpenAI (injecting the real
-// key server-side), relay the response, and record an async request_logs entry
-// with tokens, cost, latency, and status. The response path never blocks on the
-// log write.
+// Package proxy implements the gateway's request lifecycle. It forwards
+// POST /v1/chat/completions to OpenAI (injecting the real key server-side),
+// relays the response, and records an async request_logs entry with the
+// authenticated key id, tokens, cost, latency, and status. The response path
+// never blocks on the log write.
 package proxy
 
 import (
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sushil23harsana/ai-gateway/internal/config"
+	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
@@ -47,6 +48,12 @@ func NewHandler(client *http.Client, openai *providers.OpenAI, pricing config.Pr
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	// Authenticated virtual key (set by the auth middleware) → request_logs.api_key_id.
+	var apiKeyID *string
+	if id, ok := keys.IdentityFrom(r.Context()); ok {
+		apiKeyID = &id.ID
+	}
+
 	if h.openai.APIKey() == "" {
 		writeJSONError(w, http.StatusInternalServerError, "OPENAI_API_KEY not configured on gateway")
 		return
@@ -67,7 +74,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.openai.ChatCompletionsURL(), bytes.NewReader(body))
 	if err != nil {
-		h.fail(w, start, meta.Model, http.StatusInternalServerError, err)
+		h.fail(w, start, apiKeyID, meta.Model, http.StatusInternalServerError, err)
 		return
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -78,20 +85,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
-		h.fail(w, start, meta.Model, http.StatusBadGateway, err)
+		h.fail(w, start, apiKeyID, meta.Model, http.StatusBadGateway, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	// Streaming (SSE): pass through; mid-stream token accounting is a Phase 6 item.
 	if meta.Stream {
-		h.relayStream(w, resp, start, meta.Model)
+		h.relayStream(w, resp, start, apiKeyID, meta.Model)
 		return
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		h.fail(w, start, meta.Model, http.StatusBadGateway, err)
+		h.fail(w, start, apiKeyID, meta.Model, http.StatusBadGateway, err)
 		return
 	}
 	latency := time.Since(start)
@@ -114,6 +121,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("could not parse usage from openai response", "err", perr)
 		}
 	}
+
 	// Price by the resolved model (e.g. "gpt-4o-mini-2024-07-18"); if that exact
 	// snapshot isn't priced, fall back to the requested alias ("gpt-4o-mini").
 	cost, priced := h.pricing.Cost(model, tokensIn, tokensOut)
@@ -125,6 +133,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rl := store.RequestLog{
+		APIKeyID:  apiKeyID,
 		Provider:  h.openai.Name(),
 		Model:     model,
 		Status:    resp.StatusCode,
@@ -142,7 +151,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // relayStream copies an SSE response straight through to the client, flushing as
 // it goes, and logs status + latency. Token accounting for streams is deferred.
-func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start time.Time, model string) {
+func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start time.Time, apiKeyID *string, model string) {
 	w.Header().Set("Content-Type", contentTypeOr(resp, "text/event-stream"))
 	w.WriteHeader(resp.StatusCode)
 
@@ -164,6 +173,7 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start 
 	}
 
 	h.sink.Enqueue(store.RequestLog{
+		APIKeyID:  apiKeyID,
 		Provider:  h.openai.Name(),
 		Model:     model,
 		Status:    resp.StatusCode,
@@ -172,10 +182,11 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start 
 }
 
 // fail records a failed request and returns a JSON error to the client.
-func (h *Handler) fail(w http.ResponseWriter, start time.Time, model string, status int, cause error) {
+func (h *Handler) fail(w http.ResponseWriter, start time.Time, apiKeyID *string, model string, status int, cause error) {
 	h.log.Error("proxy error", "status", status, "err", cause)
 	msg := cause.Error()
 	h.sink.Enqueue(store.RequestLog{
+		APIKeyID:  apiKeyID,
 		Provider:  h.openai.Name(),
 		Model:     model,
 		Status:    status,

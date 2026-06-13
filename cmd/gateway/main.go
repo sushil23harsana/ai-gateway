@@ -1,10 +1,10 @@
 // Command gateway is the entrypoint for the AI Gateway HTTP server.
 //
-// Phase 0 added config, structured logging, graceful shutdown, and GET /healthz.
-// Phase 1 adds the core proxy: POST /v1/chat/completions forwards to OpenAI
-// (injecting the real key server-side), relays the response, and records an
-// async request_logs row (tokens, cost, latency, status) without blocking the
-// response. Auth, rate limiting, caching, and multi-provider come in later phases.
+// Phase 0: config, structured logging, graceful shutdown, GET /healthz.
+// Phase 1: core proxy POST /v1/chat/completions → OpenAI + async request_logs.
+// Phase 2: virtual-key auth (Authorization: Bearer <virtual-key>), an admin API
+// to mint keys (POST/GET /admin/keys, guarded by ADMIN_TOKEN), and a Redis
+// token-bucket rate limiter per key (429 + Retry-After when exceeded).
 package main
 
 import (
@@ -18,10 +18,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
+	"github.com/sushil23harsana/ai-gateway/internal/api"
 	"github.com/sushil23harsana/ai-gateway/internal/config"
+	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/metrics"
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
 	"github.com/sushil23harsana/ai-gateway/internal/proxy"
+	"github.com/sushil23harsana/ai-gateway/internal/ratelimit"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
@@ -50,8 +55,13 @@ func run() error {
 	if cfg.OpenAIAPIKey == "" {
 		logger.Warn("OPENAI_API_KEY is not set; /v1/chat/completions will return 500 until configured")
 	}
+	if cfg.AdminToken == "" {
+		logger.Warn("ADMIN_TOKEN is not set; /admin endpoints are disabled (503)")
+	} else if cfg.AdminToken == "change-me" {
+		logger.Warn("ADMIN_TOKEN is the insecure default 'change-me'; set a real value")
+	}
 
-	// PostgreSQL — request_logs lives here. Connectivity is required.
+	// PostgreSQL — request_logs and api_keys live here. Connectivity is required.
 	st, err := store.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to connect to postgres", "err", err)
@@ -59,8 +69,23 @@ func run() error {
 	}
 	defer st.Close()
 
-	// Async request-log writer (channel + worker pool) — keeps logging off the
-	// response path.
+	// Redis — token-bucket rate limiting. Required.
+	ropt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse REDIS_URL", "err", err)
+		return err
+	}
+	rdb := redis.NewClient(ropt)
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		logger.Error("failed to connect to redis", "err", err)
+		return err
+	}
+	pingCancel()
+	defer rdb.Close()
+
+	// Async request-log writer (channel + worker pool).
 	mlogger := metrics.NewLogger(st, 1000, 4, logger)
 	mlogger.Start()
 
@@ -68,9 +93,22 @@ func run() error {
 	upstream := &http.Client{Timeout: time.Duration(cfg.UpstreamTimeoutSeconds) * time.Second}
 	proxyHandler := proxy.NewHandler(upstream, openai, cfg.Pricing, mlogger, logger)
 
+	authenticator := keys.NewAuthenticator(st, logger)
+	limiter := ratelimit.NewLimiter(rdb)
+	keyAdmin := api.NewKeyAdmin(st, logger)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("POST /v1/chat/completions", proxyHandler.ChatCompletions)
+
+	// Admin control plane (guarded by ADMIN_TOKEN).
+	adminAuth := api.AdminAuth(cfg.AdminToken, logger)
+	mux.Handle("POST /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.Create)))
+	mux.Handle("GET /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.List)))
+
+	// Proxy: authenticate the virtual key, then rate-limit per key, then forward.
+	rateLimited := ratelimit.Middleware(limiter, logger)
+	mux.Handle("POST /v1/chat/completions",
+		authenticator.Middleware(rateLimited(http.HandlerFunc(proxyHandler.ChatCompletions))))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
