@@ -24,6 +24,10 @@ type Config struct {
 	OpenAIAPIKey    string
 	AnthropicAPIKey string
 
+	// Provider endpoints / upstream behavior.
+	OpenAIBaseURL          string
+	UpstreamTimeoutSeconds int
+
 	// Infra
 	RedisURL    string
 	DatabaseURL string
@@ -67,8 +71,10 @@ func Load() (*Config, error) {
 		Port:            getenv("PORT", "8080"),
 		LogLevel:        parseLevel(getenv("LOG_LEVEL", "info")),
 		AdminToken:      os.Getenv("ADMIN_TOKEN"),
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
+		AnthropicAPIKey:        os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIBaseURL:          getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		UpstreamTimeoutSeconds: getenvInt("UPSTREAM_TIMEOUT_SECONDS", 120),
 		RedisURL:        getenv("REDIS_URL", "redis://localhost:6379"),
 		DatabaseURL:     getenv("DATABASE_URL", "postgres://gw:gw@localhost:5432/aigateway?sslmode=disable"),
 		CacheTTLSeconds: getenvInt("CACHE_TTL_SECONDS", 3600),

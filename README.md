@@ -14,11 +14,13 @@ project in Go.
 
 ## Status
 
-Built in independently runnable phases (see [BUILD.md](BUILD.md)).
+Built in independently runnable phases (see [BUILD.md](BUILD.md)). Per-phase
+notes — what each phase actually changed — live in [docs/](docs/README.md).
 
 - [x] **Phase 0 — Scaffold:** repo layout, Docker Compose (redis + postgres),
       config loader (`slog`, graceful shutdown), DB migrations, `GET /healthz`.
-- [ ] **Phase 1 — Pass-through proxy + observability** (async request logging).
+- [x] **Phase 1 — Pass-through proxy + observability:** `POST /v1/chat/completions`
+      → OpenAI (key injected server-side), async `request_logs` with tokens, cost, latency.
 - [ ] **Phase 2 — Virtual keys + rate limiting** (Redis token bucket).
 - [ ] **Phase 3 — Response caching.**
 - [ ] **Phase 4 — Multi-provider + routing/failover.**

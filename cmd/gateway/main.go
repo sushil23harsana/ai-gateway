@@ -1,8 +1,10 @@
 // Command gateway is the entrypoint for the AI Gateway HTTP server.
 //
-// Phase 0: it loads configuration, sets up structured logging, serves
-// GET /healthz, and shuts down gracefully on SIGINT/SIGTERM. Provider proxying,
-// auth, rate limiting and caching are layered on in later phases.
+// Phase 0 added config, structured logging, graceful shutdown, and GET /healthz.
+// Phase 1 adds the core proxy: POST /v1/chat/completions forwards to OpenAI
+// (injecting the real key server-side), relays the response, and records an
+// async request_logs row (tokens, cost, latency, status) without blocking the
+// response. Auth, rate limiting, caching, and multi-provider come in later phases.
 package main
 
 import (
@@ -17,6 +19,10 @@ import (
 	"time"
 
 	"github.com/sushil23harsana/ai-gateway/internal/config"
+	"github.com/sushil23harsana/ai-gateway/internal/metrics"
+	"github.com/sushil23harsana/ai-gateway/internal/providers"
+	"github.com/sushil23harsana/ai-gateway/internal/proxy"
+	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
 func main() {
@@ -29,7 +35,6 @@ func main() {
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		// Logger isn't configured yet; use the default before failing.
 		slog.Error("failed to load config", "err", err)
 		return err
 	}
@@ -42,20 +47,43 @@ func run() error {
 		"cache_ttl_seconds", cfg.CacheTTLSeconds,
 		"priced_models", len(cfg.Pricing.Models),
 	)
+	if cfg.OpenAIAPIKey == "" {
+		logger.Warn("OPENAI_API_KEY is not set; /v1/chat/completions will return 500 until configured")
+	}
+
+	// PostgreSQL — request_logs lives here. Connectivity is required.
+	st, err := store.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to connect to postgres", "err", err)
+		return err
+	}
+	defer st.Close()
+
+	// Async request-log writer (channel + worker pool) — keeps logging off the
+	// response path.
+	mlogger := metrics.NewLogger(st, 1000, 4, logger)
+	mlogger.Start()
+
+	openai := providers.NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey)
+	upstream := &http.Client{Timeout: time.Duration(cfg.UpstreamTimeoutSeconds) * time.Second}
+	proxyHandler := proxy.NewHandler(upstream, openai, cfg.Pricing, mlogger, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("POST /v1/chat/completions", proxyHandler.ChatCompletions)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           requestLogger(logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		// WriteTimeout is intentionally 0: LLM responses (and SSE streams) can run
+		// far longer than a normal HTTP response. The upstream client has its own
+		// timeout, and ReadHeaderTimeout still guards against slow-loris.
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
 	}
 
-	// Listen for OS signals to trigger graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -78,8 +106,14 @@ func run() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "err", err)
-		return err
+		// fall through to drain the logger anyway
 	}
+
+	// Drain pending request logs before the deferred st.Close() runs.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	mlogger.Stop(drainCtx)
+
 	logger.Info("shutdown complete")
 	return nil
 }
@@ -114,4 +148,12 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Flush exposes the underlying flusher so SSE streaming works through the
+// access-log middleware.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
