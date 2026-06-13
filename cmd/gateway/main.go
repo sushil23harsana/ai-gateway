@@ -108,7 +108,9 @@ func run() error {
 
 	authenticator := keys.NewAuthenticator(st, logger)
 	limiter := ratelimit.NewLimiter(rdb)
+	liveCounter := metrics.NewLiveCounter(rdb, logger)
 	keyAdmin := api.NewKeyAdmin(st, logger)
+	statsHandler := api.NewStats(st, liveCounter, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -118,10 +120,19 @@ func run() error {
 	mux.Handle("POST /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.Create)))
 	mux.Handle("GET /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.List)))
 
-	// Proxy: authenticate the virtual key, then rate-limit per key, then forward.
+	// Dashboard stats endpoints (also guarded by ADMIN_TOKEN).
+	mux.Handle("GET /admin/stats/overview", adminAuth(http.HandlerFunc(statsHandler.Overview)))
+	mux.Handle("GET /admin/stats/timeseries", adminAuth(http.HandlerFunc(statsHandler.Timeseries)))
+	mux.Handle("GET /admin/stats/by-model", adminAuth(http.HandlerFunc(statsHandler.ByModel)))
+	mux.Handle("GET /admin/stats/by-provider", adminAuth(http.HandlerFunc(statsHandler.ByProvider)))
+	mux.Handle("GET /admin/stats/by-key", adminAuth(http.HandlerFunc(statsHandler.ByKey)))
+	mux.Handle("GET /admin/stats/live", adminAuth(http.HandlerFunc(statsHandler.Live)))
+
+	// Proxy: authenticate the virtual key, rate-limit per key, count for the live
+	// tile, then forward.
 	rateLimited := ratelimit.Middleware(limiter, logger)
 	mux.Handle("POST /v1/chat/completions",
-		authenticator.Middleware(rateLimited(http.HandlerFunc(proxyHandler.ChatCompletions))))
+		authenticator.Middleware(rateLimited(liveCounter.Middleware(http.HandlerFunc(proxyHandler.ChatCompletions)))))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
