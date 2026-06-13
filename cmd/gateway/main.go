@@ -54,7 +54,10 @@ func run() error {
 		"priced_models", len(cfg.Pricing.Models),
 	)
 	if cfg.OpenAIAPIKey == "" {
-		logger.Warn("OPENAI_API_KEY is not set; /v1/chat/completions will return 500 until configured")
+		logger.Warn("OPENAI_API_KEY is not set; OpenAI-routed requests will return 500 until configured")
+	}
+	if cfg.AnthropicAPIKey == "" {
+		logger.Warn("ANTHROPIC_API_KEY is not set; Anthropic-routed requests will return 500 until configured")
 	}
 	if cfg.AdminToken == "" {
 		logger.Warn("ADMIN_TOKEN is not set; /admin endpoints are disabled (503)")
@@ -91,10 +94,17 @@ func run() error {
 	mlogger.Start()
 
 	openai := providers.NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey)
+	anthropic := providers.NewAnthropic(cfg.AnthropicBaseURL, cfg.AnthropicAPIKey, cfg.AnthropicVersion, cfg.AnthropicMaxTokens)
+	router := providers.NewRouter([]providers.Provider{openai, anthropic}, cfg.Pricing.ProviderMap(), cfg.DefaultProvider)
+
 	upstream := &http.Client{Timeout: time.Duration(cfg.UpstreamTimeoutSeconds) * time.Second}
 	respCache := cache.New(rdb, cfg.CacheTTLSeconds, cfg.CacheScope, cfg.CacheMaxBytes, cfg.CacheEnabled, logger)
 	logger.Info("response cache", "enabled", respCache.Enabled(), "scope", string(respCache.Scope()), "ttl_seconds", cfg.CacheTTLSeconds)
-	proxyHandler := proxy.NewHandler(upstream, openai, cfg.Pricing, mlogger, respCache, logger)
+
+	failover := proxy.FailoverConfig{Enabled: cfg.FailoverEnabled, Provider: cfg.FailoverProvider, Model: cfg.FailoverModel}
+	logger.Info("routing", "default_provider", cfg.DefaultProvider, "failover_enabled", failover.Enabled, "failover_provider", failover.Provider, "failover_model", failover.Model)
+
+	proxyHandler := proxy.NewHandler(upstream, router, cfg.Pricing, mlogger, respCache, failover, logger)
 
 	authenticator := keys.NewAuthenticator(st, logger)
 	limiter := ratelimit.NewLimiter(rdb)

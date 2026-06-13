@@ -25,7 +25,9 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
       raw shown once), Bearer auth on the proxy, Redis token-bucket limiter (429 + `Retry-After`).
 - [x] **Phase 3 — Response caching:** Redis exact-match cache (per-key scope, TTL,
       per-key toggle); hits skip the provider (`cache_hit=true`, cost 0) — verified 1.8s → 4.8ms.
-- [ ] **Phase 4 — Multi-provider + routing/failover.**
+- [x] **Phase 4 — Multi-provider + routing/failover:** `Provider` interface, native
+      Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover.
+      *(OpenAI path + routing live-verified; real-Anthropic + failover demo pending `ANTHROPIC_API_KEY`.)*
 - [ ] **Phase 5 — Next.js dashboard.**
 - [ ] **Phase 6 — Stretch** (semantic cache, SSE streaming, budget alerts, load test).
 

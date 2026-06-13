@@ -1,14 +1,15 @@
-// Package proxy implements the gateway's request lifecycle. It checks the
-// response cache, and on a miss forwards POST /v1/chat/completions to OpenAI
-// (injecting the real key server-side), relays the response, records an async
-// request_logs entry, and stores the response in the cache. The response path
-// never blocks on the log write.
+// Package proxy implements the gateway's request lifecycle. It routes a request
+// to a provider by model, checks the response cache, and on a miss forwards to
+// the provider (translating to/from the provider's native API), relays the
+// unified response, records an async request_logs entry, and stores the response
+// in the cache. On a primary 5xx/timeout it fails over to a configured fallback
+// provider. The response path never blocks on the log write.
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,14 +27,12 @@ const (
 	maxErrorBytes   = 500      // how much of an upstream error body to record
 )
 
-// LogSink receives request logs without blocking the caller. *metrics.Logger
-// satisfies it; tests use a fake.
+// LogSink receives request logs without blocking the caller.
 type LogSink interface {
 	Enqueue(store.RequestLog)
 }
 
-// ResponseCache is the response-cache behavior the handler needs. *cache.Cache
-// satisfies it; tests use a fake.
+// ResponseCache is the response-cache behavior the handler needs.
 type ResponseCache interface {
 	Enabled() bool
 	Key(apiKeyID, provider string, body []byte) (string, bool)
@@ -41,36 +40,44 @@ type ResponseCache interface {
 	Set(ctx context.Context, key string, e cache.Entry) error
 }
 
-// Handler forwards chat-completions traffic to OpenAI and logs the outcome.
+// Router selects a provider for a model.
+type Router interface {
+	ProviderFor(model string) (providers.Provider, bool)
+	ByName(name string) (providers.Provider, bool)
+}
+
+// FailoverConfig controls cross-provider failover on primary 5xx/timeout.
+type FailoverConfig struct {
+	Enabled  bool
+	Provider string // fallback provider name ("" disables failover)
+	Model    string // model to use on the fallback provider
+}
+
+// Handler routes chat-completions traffic, translates per provider, and logs.
 type Handler struct {
-	client  *http.Client
-	openai  *providers.OpenAI
-	pricing config.Pricing
-	sink    LogSink
-	cache   ResponseCache
-	log     *slog.Logger
+	client   *http.Client
+	router   Router
+	pricing  config.Pricing
+	sink     LogSink
+	cache    ResponseCache
+	failover FailoverConfig
+	log      *slog.Logger
 }
 
 // NewHandler wires the proxy dependencies.
-func NewHandler(client *http.Client, openai *providers.OpenAI, pricing config.Pricing, sink LogSink, c ResponseCache, log *slog.Logger) *Handler {
-	return &Handler{client: client, openai: openai, pricing: pricing, sink: sink, cache: c, log: log}
+func NewHandler(client *http.Client, router Router, pricing config.Pricing, sink LogSink, c ResponseCache, failover FailoverConfig, log *slog.Logger) *Handler {
+	return &Handler{client: client, router: router, pricing: pricing, sink: sink, cache: c, failover: failover, log: log}
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Authenticated virtual key (set by the auth middleware) → request_logs.api_key_id.
 	var apiKeyID *string
 	var keyCacheEnabled bool
 	if id, ok := keys.IdentityFrom(r.Context()); ok {
 		apiKeyID = &id.ID
 		keyCacheEnabled = id.CacheEnabled
-	}
-
-	if h.openai.APIKey() == "" {
-		writeJSONError(w, http.StatusInternalServerError, "OPENAI_API_KEY not configured on gateway")
-		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
@@ -79,153 +86,167 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Peek at model + stream flag; keep the raw body for verbatim forwarding.
 	var meta struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &meta)
 
-	// Cache lookup (non-streaming, caching enabled globally and for this key).
+	primary, ok := h.router.ProviderFor(meta.Model)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "no provider configured to serve this model")
+		return
+	}
+	if primary.APIKey() == "" {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("%s provider not configured on gateway", primary.Name()))
+		return
+	}
+
+	// Streaming: supported only for providers that can passthrough (OpenAI) in this phase.
+	if meta.Stream {
+		if !primary.SupportsStreaming() {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("streaming is not supported for the %q provider yet", primary.Name()))
+			return
+		}
+		h.stream(w, r, primary, body, apiKeyID, meta.Model, start)
+		return
+	}
+
+	// Cache lookup (scoped by the primary provider).
 	var cacheKey string
-	if h.cache.Enabled() && keyCacheEnabled && !meta.Stream {
-		if k, ok := h.cache.Key(deref(apiKeyID), h.openai.Name(), body); ok {
+	if h.cache.Enabled() && keyCacheEnabled {
+		if k, ok := h.cache.Key(deref(apiKeyID), primary.Name(), body); ok {
 			cacheKey = k
 			if entry, hit, gerr := h.cache.Get(r.Context(), cacheKey); gerr != nil {
 				h.log.Warn("cache get failed; treating as miss", "err", gerr)
 			} else if hit {
-				h.serveFromCache(w, start, apiKeyID, entry)
+				h.serveFromCache(w, start, apiKeyID, primary.Name(), entry)
 				return
 			}
 		}
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.openai.ChatCompletionsURL(), bytes.NewReader(body))
-	if err != nil {
-		h.fail(w, start, apiKeyID, meta.Model, http.StatusInternalServerError, err)
-		return
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+h.openai.APIKey()) // injected server-side
-	if meta.Stream {
-		upstreamReq.Header.Set("Accept", "text/event-stream")
-	}
+	// Primary attempt.
+	used := primary
+	sentModel := meta.Model
+	status, raw, terr := h.doUpstream(r.Context(), primary, body)
 
-	resp, err := h.client.Do(upstreamReq)
-	if err != nil {
-		h.fail(w, start, apiKeyID, meta.Model, http.StatusBadGateway, err)
-		return
-	}
-	defer resp.Body.Close()
+	// Failover on transport error or 5xx.
+	if (terr != nil || status >= 500) && h.failover.Enabled && h.failover.Provider != "" && h.failover.Provider != primary.Name() {
+		if fb, ok := h.router.ByName(h.failover.Provider); ok && fb.APIKey() != "" {
+			h.enqueueFailure(apiKeyID, primary.Name(), meta.Model, status, terr, raw, start)
+			h.log.Warn("primary provider failed; failing over",
+				"primary", primary.Name(), "fallback", fb.Name(), "status", status, "err", terr)
 
-	// Streaming (SSE): pass through; mid-stream token accounting + caching is Phase 6.
-	if meta.Stream {
-		h.relayStream(w, resp, start, apiKeyID, meta.Model)
-		return
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		h.fail(w, start, apiKeyID, meta.Model, http.StatusBadGateway, err)
-		return
-	}
-	latency := time.Since(start)
-
-	// Relay the upstream response verbatim.
-	ct := contentTypeOr(resp, "application/json")
-	w.Header().Set("Content-Type", ct)
-	if cacheKey != "" {
-		w.Header().Set("X-Cache", "MISS")
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(respBody)
-
-	// Parse usage, compute cost, and log — all off the response path.
-	model := meta.Model
-	var tokensIn, tokensOut int
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		if usage, m, perr := h.openai.ParseUsage(respBody); perr == nil {
-			tokensIn, tokensOut = usage.PromptTokens, usage.CompletionTokens
-			if m != "" {
-				model = m
+			fbModel := h.failover.Model
+			if fbModel == "" {
+				fbModel = meta.Model
 			}
-		} else {
-			h.log.Warn("could not parse usage from openai response", "err", perr)
+			used = fb
+			sentModel = fbModel
+			status, raw, terr = h.doUpstream(r.Context(), fb, rewriteModel(body, fbModel))
 		}
 	}
 
-	// Price by the resolved model (e.g. "gpt-4o-mini-2024-07-18"); if that exact
-	// snapshot isn't priced, fall back to the requested alias ("gpt-4o-mini").
-	cost, priced := h.pricing.Cost(model, tokensIn, tokensOut)
-	if !priced && meta.Model != "" && meta.Model != model {
-		cost, priced = h.pricing.Cost(meta.Model, tokensIn, tokensOut)
+	if terr != nil {
+		h.fail(w, start, apiKeyID, used.Name(), sentModel, http.StatusBadGateway, terr)
+		return
 	}
-	if !priced && model != "" {
-		h.log.Warn("model not found in pricing.yaml; cost recorded as 0", "model", model, "requested", meta.Model)
+
+	unified, usage, model, perr := used.TranslateResponse(status, raw)
+	if perr != nil {
+		h.log.Warn("response translation failed; relaying raw upstream body", "provider", used.Name(), "err", perr)
+		unified = raw
+	}
+	latency := time.Since(start)
+
+	// Relay the unified response.
+	w.Header().Set("Content-Type", "application/json")
+	if cacheKey != "" {
+		w.Header().Set("X-Cache", "MISS")
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(unified)
+
+	// Cost: price by the resolved model, then the model we sent to the provider.
+	resolved := model
+	if resolved == "" {
+		resolved = sentModel
+	}
+	cost, priced := h.pricing.Cost(resolved, usage.PromptTokens, usage.CompletionTokens)
+	if !priced && sentModel != "" && sentModel != resolved {
+		cost, priced = h.pricing.Cost(sentModel, usage.PromptTokens, usage.CompletionTokens)
+	}
+	if !priced && resolved != "" {
+		h.log.Warn("model not found in pricing.yaml; cost recorded as 0", "model", resolved, "sent", sentModel)
 	}
 
 	rl := store.RequestLog{
 		APIKeyID:  apiKeyID,
-		Provider:  h.openai.Name(),
-		Model:     model,
-		Status:    resp.StatusCode,
-		TokensIn:  tokensIn,
-		TokensOut: tokensOut,
+		Provider:  used.Name(),
+		Model:     resolved,
+		Status:    status,
+		TokensIn:  usage.PromptTokens,
+		TokensOut: usage.CompletionTokens,
 		CostUSD:   cost,
 		LatencyMs: int(latency.Milliseconds()),
 	}
-	if resp.StatusCode >= 400 {
-		e := truncate(string(respBody), maxErrorBytes)
+	if status >= 400 {
+		e := truncate(string(raw), maxErrorBytes)
 		rl.Error = &e
 	}
 	h.sink.Enqueue(rl)
 
-	// Store successful responses in the cache (after the client already has the body).
-	if cacheKey != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	// Store successful responses (under the primary-scoped cache key).
+	if cacheKey != "" && status >= 200 && status < 300 {
 		if serr := h.cache.Set(r.Context(), cacheKey, cache.Entry{
-			Status:      resp.StatusCode,
-			ContentType: ct,
-			Body:        string(respBody),
-			Model:       model,
-			TokensIn:    tokensIn,
-			TokensOut:   tokensOut,
+			Status:      status,
+			ContentType: "application/json",
+			Body:        string(unified),
+			Model:       resolved,
+			TokensIn:    usage.PromptTokens,
+			TokensOut:   usage.CompletionTokens,
 		}); serr != nil {
 			h.log.Warn("cache set failed", "err", serr)
 		}
 	}
 }
 
-// serveFromCache returns a cached response and logs a cache hit (cost 0 — no
-// provider call was made).
-func (h *Handler) serveFromCache(w http.ResponseWriter, start time.Time, apiKeyID *string, e *cache.Entry) {
-	ct := e.ContentType
-	if ct == "" {
-		ct = "application/json"
+// doUpstream builds and executes a provider request, returning status, raw body,
+// and a transport error (status 0 on transport failure).
+func (h *Handler) doUpstream(ctx context.Context, p providers.Provider, body []byte) (int, []byte, error) {
+	req, err := p.BuildUpstreamRequest(ctx, body)
+	if err != nil {
+		return 0, nil, err
 	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("X-Cache", "HIT")
-	w.WriteHeader(e.Status)
-	_, _ = io.WriteString(w, e.Body)
-
-	h.sink.Enqueue(store.RequestLog{
-		APIKeyID:  apiKeyID,
-		Provider:  h.openai.Name(),
-		Model:     e.Model,
-		Status:    e.Status,
-		CacheHit:  true,
-		TokensIn:  e.TokensIn,
-		TokensOut: e.TokensOut,
-		CostUSD:   0, // served from cache — no provider charge
-		LatencyMs: int(time.Since(start).Milliseconds()),
-	})
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, raw, nil
 }
 
-// relayStream copies an SSE response straight through to the client, flushing as
-// it goes, and logs status + latency. Token accounting for streams is deferred.
-func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start time.Time, apiKeyID *string, model string) {
+// stream does an OpenAI-style streaming passthrough (no failover, no caching).
+func (h *Handler) stream(w http.ResponseWriter, r *http.Request, p providers.Provider, body []byte, apiKeyID *string, model string, start time.Time) {
+	req, err := p.BuildUpstreamRequest(r.Context(), body)
+	if err != nil {
+		h.fail(w, start, apiKeyID, p.Name(), model, http.StatusInternalServerError, err)
+		return
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		h.fail(w, start, apiKeyID, p.Name(), model, http.StatusBadGateway, err)
+		return
+	}
+	defer resp.Body.Close()
+
 	w.Header().Set("Content-Type", contentTypeOr(resp, "text/event-stream"))
 	w.WriteHeader(resp.StatusCode)
-
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 4096)
 	for {
@@ -245,26 +266,86 @@ func (h *Handler) relayStream(w http.ResponseWriter, resp *http.Response, start 
 
 	h.sink.Enqueue(store.RequestLog{
 		APIKeyID:  apiKeyID,
-		Provider:  h.openai.Name(),
+		Provider:  p.Name(),
 		Model:     model,
 		Status:    resp.StatusCode,
 		LatencyMs: int(time.Since(start).Milliseconds()),
 	})
 }
 
+// serveFromCache returns a cached response and logs a cache hit (cost 0).
+func (h *Handler) serveFromCache(w http.ResponseWriter, start time.Time, apiKeyID *string, provider string, e *cache.Entry) {
+	ct := e.ContentType
+	if ct == "" {
+		ct = "application/json"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Cache", "HIT")
+	w.WriteHeader(e.Status)
+	_, _ = io.WriteString(w, e.Body)
+
+	h.sink.Enqueue(store.RequestLog{
+		APIKeyID:  apiKeyID,
+		Provider:  provider,
+		Model:     e.Model,
+		Status:    e.Status,
+		CacheHit:  true,
+		TokensIn:  e.TokensIn,
+		TokensOut: e.TokensOut,
+		CostUSD:   0,
+		LatencyMs: int(time.Since(start).Milliseconds()),
+	})
+}
+
+// enqueueFailure logs a failed (pre-failover) upstream attempt.
+func (h *Handler) enqueueFailure(apiKeyID *string, provider, model string, status int, terr error, raw []byte, start time.Time) {
+	logStatus := status
+	if logStatus == 0 {
+		logStatus = http.StatusBadGateway
+	}
+	var msg string
+	if terr != nil {
+		msg = terr.Error()
+	} else {
+		msg = truncate(string(raw), maxErrorBytes)
+	}
+	h.sink.Enqueue(store.RequestLog{
+		APIKeyID:  apiKeyID,
+		Provider:  provider,
+		Model:     model,
+		Status:    logStatus,
+		LatencyMs: int(time.Since(start).Milliseconds()),
+		Error:     &msg,
+	})
+}
+
 // fail records a failed request and returns a JSON error to the client.
-func (h *Handler) fail(w http.ResponseWriter, start time.Time, apiKeyID *string, model string, status int, cause error) {
-	h.log.Error("proxy error", "status", status, "err", cause)
+func (h *Handler) fail(w http.ResponseWriter, start time.Time, apiKeyID *string, provider, model string, status int, cause error) {
+	h.log.Error("proxy error", "provider", provider, "status", status, "err", cause)
 	msg := cause.Error()
 	h.sink.Enqueue(store.RequestLog{
 		APIKeyID:  apiKeyID,
-		Provider:  h.openai.Name(),
+		Provider:  provider,
 		Model:     model,
 		Status:    status,
 		LatencyMs: int(time.Since(start).Milliseconds()),
 		Error:     &msg,
 	})
 	writeJSONError(w, status, msg)
+}
+
+// rewriteModel returns body with its "model" field set to model (for failover).
+func rewriteModel(body []byte, model string) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	m["model"] = model
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func deref(s *string) string {

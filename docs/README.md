@@ -12,6 +12,6 @@ The full spec is in [BUILD.md](../BUILD.md).
 | 1 | [phase-1.md](phase-1.md) | Core proxy: `POST /v1/chat/completions` → OpenAI, async `request_logs` with tokens/cost/latency. |
 | 2 | [phase-2.md](phase-2.md) | Virtual keys (hashed) + admin API to mint them + Redis token-bucket rate limiting. |
 | 3 | [phase-3.md](phase-3.md) | Exact-match response caching in Redis (per-key scope, TTL, toggle) — skips the provider on a hit. |
-| 4 | _pending_ | Multi-provider (OpenAI + Anthropic) + routing/failover. |
+| 4 | [phase-4.md](phase-4.md) | `Provider` interface + native Anthropic (OpenAI⇄Messages translation) + model routing + 5xx/timeout failover. (Anthropic live check pending key.) |
 | 5 | _pending_ | Next.js dashboard. |
 | 6 | _pending_ | Stretch: semantic cache, SSE streaming token accounting, budget alerts, load test. |

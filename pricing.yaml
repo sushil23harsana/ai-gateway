@@ -1,4 +1,5 @@
-# Per-model pricing in USD per 1,000 tokens (input & output).
+# Per-model pricing in USD per 1,000 tokens (input & output). The `provider`
+# field also serves as the model → provider routing registry (see internal/providers).
 #
 # IMPORTANT: these figures must be verified against current provider pricing
 # before relying on cost numbers — they drift and are easy to get wrong.
@@ -9,6 +10,7 @@ models:
   gpt-4o-mini: { provider: openai, in_per_1k: 0.00015, out_per_1k: 0.0006 }
   gpt-4o:      { provider: openai, in_per_1k: 0.0025,  out_per_1k: 0.01 }
 
-  # --- Anthropic ---
-  claude-haiku-4-5:  { provider: anthropic, in_per_1k: 0.0008, out_per_1k: 0.004 }
-  claude-sonnet-4-6: { provider: anthropic, in_per_1k: 0.003,  out_per_1k: 0.015 }
+  # --- Anthropic (per-MTok: Haiku $1/$5, Sonnet $3/$15, Opus $5/$25) ---
+  claude-haiku-4-5:  { provider: anthropic, in_per_1k: 0.001, out_per_1k: 0.005 }
+  claude-sonnet-4-6: { provider: anthropic, in_per_1k: 0.003, out_per_1k: 0.015 }
+  claude-opus-4-8:   { provider: anthropic, in_per_1k: 0.005, out_per_1k: 0.025 }

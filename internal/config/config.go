@@ -26,7 +26,16 @@ type Config struct {
 
 	// Provider endpoints / upstream behavior.
 	OpenAIBaseURL          string
+	AnthropicBaseURL       string
+	AnthropicVersion       string
+	AnthropicMaxTokens     int // default max_tokens for Anthropic (required by its API)
 	UpstreamTimeoutSeconds int
+
+	// Routing & failover.
+	DefaultProvider  string // provider used when a model can't be routed otherwise
+	FailoverEnabled  bool
+	FailoverProvider string // fallback provider name on primary 5xx/timeout ("" disables)
+	FailoverModel    string // model to use on the fallback provider
 
 	// Infra
 	RedisURL    string
@@ -55,6 +64,18 @@ type Pricing struct {
 	Models map[string]ModelPricing `yaml:"models"`
 }
 
+// ProviderMap returns a model → provider-name mapping derived from the pricing
+// table, used by the router to pick a provider for a requested model.
+func (p Pricing) ProviderMap() map[string]string {
+	m := make(map[string]string, len(p.Models))
+	for model, mp := range p.Models {
+		if mp.Provider != "" {
+			m[model] = mp.Provider
+		}
+	}
+	return m
+}
+
 // Cost returns the USD cost for a request against the named model. The bool is
 // false when the model is unknown to the pricing table (caller decides policy).
 func (p Pricing) Cost(model string, tokensIn, tokensOut int) (float64, bool) {
@@ -77,7 +98,14 @@ func Load() (*Config, error) {
 		OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
 		AnthropicAPIKey:        os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIBaseURL:          getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		AnthropicBaseURL:       getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+		AnthropicVersion:       getenv("ANTHROPIC_VERSION", "2023-06-01"),
+		AnthropicMaxTokens:     getenvInt("ANTHROPIC_MAX_TOKENS", 4096),
 		UpstreamTimeoutSeconds: getenvInt("UPSTREAM_TIMEOUT_SECONDS", 120),
+		DefaultProvider:        getenv("DEFAULT_PROVIDER", "openai"),
+		FailoverEnabled:        getenvBool("FAILOVER_ENABLED", true),
+		FailoverProvider:       os.Getenv("FAILOVER_PROVIDER"),
+		FailoverModel:          os.Getenv("FAILOVER_MODEL"),
 		RedisURL:        getenv("REDIS_URL", "redis://localhost:6379"),
 		DatabaseURL:     getenv("DATABASE_URL", "postgres://gw:gw@localhost:5432/aigateway?sslmode=disable"),
 		CacheTTLSeconds: getenvInt("CACHE_TTL_SECONDS", 3600),

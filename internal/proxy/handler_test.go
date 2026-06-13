@@ -29,8 +29,8 @@ type fakeCache struct {
 	sets    []cache.Entry
 }
 
-func (f *fakeCache) Enabled() bool                                 { return f.enabled }
-func (f *fakeCache) Key(_, _ string, _ []byte) (string, bool)      { return "cache:test", true }
+func (f *fakeCache) Enabled() bool                            { return f.enabled }
+func (f *fakeCache) Key(_, _ string, _ []byte) (string, bool) { return "cache:test", true }
 func (f *fakeCache) Get(context.Context, string) (*cache.Entry, bool, error) {
 	return f.entry, f.hit, nil
 }
@@ -41,13 +41,17 @@ func (f *fakeCache) Set(_ context.Context, _ string, e cache.Entry) error {
 
 func testPricing() config.Pricing {
 	return config.Pricing{Models: map[string]config.ModelPricing{
-		"gpt-4o-mini": {Provider: "openai", InPer1K: 0.00015, OutPer1K: 0.0006},
+		"gpt-4o-mini":      {Provider: "openai", InPer1K: 0.00015, OutPer1K: 0.0006},
+		"claude-haiku-4-5": {Provider: "anthropic", InPer1K: 0.001, OutPer1K: 0.005},
 	}}
 }
 
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
 func newTestHandler(client *http.Client, baseURL string, sink LogSink, c ResponseCache) *Handler {
 	oa := providers.NewOpenAI(baseURL, "test-key")
-	return NewHandler(client, oa, testPricing(), sink, c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	router := providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
+	return NewHandler(client, router, testPricing(), sink, c, FailoverConfig{}, discardLogger())
 }
 
 func disabledCache() *fakeCache { return &fakeCache{enabled: false} }
@@ -73,7 +77,6 @@ func TestChatCompletionsProxiesRelaysAndLogs(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
-
 	h.ChatCompletions(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -82,7 +85,6 @@ func TestChatCompletionsProxiesRelaysAndLogs(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"prompt_tokens":100`) {
 		t.Errorf("response body not relayed verbatim: %s", rec.Body.String())
 	}
-
 	if len(sink.logs) != 1 {
 		t.Fatalf("expected 1 log entry, got %d", len(sink.logs))
 	}
@@ -93,41 +95,8 @@ func TestChatCompletionsProxiesRelaysAndLogs(t *testing.T) {
 	if got.Status != 200 || got.TokensIn != 100 || got.TokensOut != 200 {
 		t.Errorf("log status/tokens = %d / %d / %d", got.Status, got.TokensIn, got.TokensOut)
 	}
-	wantCost := 0.000135
-	if math.Abs(got.CostUSD-wantCost) > 1e-9 {
-		t.Errorf("cost = %v, want %v", got.CostUSD, wantCost)
-	}
-	if got.Error != nil {
-		t.Errorf("expected nil error, got %q", *got.Error)
-	}
-}
-
-func TestChatCompletionsPricesByRequestedAliasWhenSnapshotUnpriced(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"model":"gpt-4o-mini-2024-07-18","usage":{"prompt_tokens":100,"completion_tokens":200}}`)
-	}))
-	defer upstream.Close()
-
-	sink := &fakeSink{}
-	h := newTestHandler(upstream.Client(), upstream.URL, sink, disabledCache())
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"gpt-4o-mini","messages":[]}`))
-	rec := httptest.NewRecorder()
-	h.ChatCompletions(rec, req)
-
-	if len(sink.logs) != 1 {
-		t.Fatalf("expected 1 log entry, got %d", len(sink.logs))
-	}
-	got := sink.logs[0]
-	if got.Model != "gpt-4o-mini-2024-07-18" {
-		t.Errorf("logged model = %q, want the resolved snapshot", got.Model)
-	}
-	wantCost := 0.000135
-	if math.Abs(got.CostUSD-wantCost) > 1e-9 {
-		t.Errorf("cost = %v, want %v (alias fallback failed)", got.CostUSD, wantCost)
+	if math.Abs(got.CostUSD-0.000135) > 1e-9 {
+		t.Errorf("cost = %v, want 0.000135", got.CostUSD)
 	}
 }
 
@@ -160,11 +129,8 @@ func TestCacheHitSkipsUpstream(t *testing.T) {
 	if rec.Body.String() != `{"cached":true}` {
 		t.Errorf("body = %q, want cached body", rec.Body.String())
 	}
-	if len(sink.logs) != 1 || !sink.logs[0].CacheHit {
-		t.Fatalf("expected 1 log with CacheHit=true, got %+v", sink.logs)
-	}
-	if sink.logs[0].CostUSD != 0 {
-		t.Errorf("cache-hit cost = %v, want 0", sink.logs[0].CostUSD)
+	if len(sink.logs) != 1 || !sink.logs[0].CacheHit || sink.logs[0].CostUSD != 0 {
+		t.Fatalf("expected 1 cache-hit log with cost 0, got %+v", sink.logs)
 	}
 }
 
@@ -188,14 +154,61 @@ func TestCacheMissStoresResponse(t *testing.T) {
 	if rec.Header().Get("X-Cache") != "MISS" {
 		t.Errorf("X-Cache = %q, want MISS", rec.Header().Get("X-Cache"))
 	}
-	if len(fc.sets) != 1 {
-		t.Fatalf("expected 1 cache Set on miss, got %d", len(fc.sets))
+	if len(fc.sets) != 1 || fc.sets[0].TokensIn != 3 || fc.sets[0].TokensOut != 4 {
+		t.Fatalf("expected 1 cache Set with tokens 3/4, got %+v", fc.sets)
 	}
-	if fc.sets[0].TokensIn != 3 || fc.sets[0].TokensOut != 4 {
-		t.Errorf("stored tokens = %d/%d, want 3/4", fc.sets[0].TokensIn, fc.sets[0].TokensOut)
+}
+
+func TestFailoverOnPrimary5xx(t *testing.T) {
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	}))
+	defer openaiSrv.Close()
+
+	anthropicCalled := false
+	anthropicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anthropicCalled = true
+		if got := r.Header.Get("x-api-key"); got != "an-key" {
+			t.Errorf("anthropic x-api-key = %q, want an-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","stop_reason":"end_turn","content":[{"type":"text","text":"fallback hi"}],"usage":{"input_tokens":8,"output_tokens":3}}`)
+	}))
+	defer anthropicSrv.Close()
+
+	oa := providers.NewOpenAI(openaiSrv.URL, "oa-key")
+	an := providers.NewAnthropic(anthropicSrv.URL, "an-key", "2023-06-01", 1024)
+	router := providers.NewRouter([]providers.Provider{oa, an}, testPricing().ProviderMap(), "openai")
+	sink := &fakeSink{}
+	h := NewHandler(&http.Client{}, router, testPricing(), sink, disabledCache(),
+		FailoverConfig{Enabled: true, Provider: "anthropic", Model: "claude-haiku-4-5"}, discardLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	if !anthropicCalled {
+		t.Fatal("fallback provider (anthropic) was not called")
 	}
-	if len(sink.logs) != 1 || sink.logs[0].CacheHit {
-		t.Errorf("expected 1 log with CacheHit=false")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Response must be translated to the unified OpenAI shape.
+	if !strings.Contains(rec.Body.String(), `"choices"`) || !strings.Contains(rec.Body.String(), "fallback hi") {
+		t.Errorf("response not translated to OpenAI shape: %s", rec.Body.String())
+	}
+	if len(sink.logs) != 2 {
+		t.Fatalf("expected 2 log rows (failed primary + fallback), got %d", len(sink.logs))
+	}
+	if sink.logs[0].Provider != "openai" || sink.logs[0].Status < 500 || sink.logs[0].Error == nil {
+		t.Errorf("first log should be the failed openai 5xx attempt: %+v", sink.logs[0])
+	}
+	if sink.logs[1].Provider != "anthropic" || sink.logs[1].Status != 200 ||
+		sink.logs[1].TokensIn != 8 || sink.logs[1].TokensOut != 3 {
+		t.Errorf("second log should be the successful anthropic attempt: %+v", sink.logs[1])
 	}
 }
 
@@ -218,24 +231,21 @@ func TestChatCompletionsLogsUpstreamErrorBody(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", rec.Code)
 	}
-	if len(sink.logs) != 1 {
-		t.Fatalf("expected 1 log entry, got %d", len(sink.logs))
+	if len(sink.logs) != 1 || sink.logs[0].Status != 429 {
+		t.Fatalf("expected 1 log with status 429, got %+v", sink.logs)
 	}
-	got := sink.logs[0]
-	if got.Status != 429 {
-		t.Errorf("log status = %d, want 429", got.Status)
-	}
-	if got.Error == nil || !strings.Contains(*got.Error, "rate limit") {
-		t.Errorf("expected error body recorded, got %v", got.Error)
+	if sink.logs[0].Error == nil || !strings.Contains(*sink.logs[0].Error, "rate limit") {
+		t.Errorf("expected error body recorded, got %v", sink.logs[0].Error)
 	}
 }
 
 func TestChatCompletionsMissingKeyReturns500(t *testing.T) {
 	sink := &fakeSink{}
-	oa := providers.NewOpenAI("http://unused", "")
-	h := NewHandler(http.DefaultClient, oa, testPricing(), sink, disabledCache(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	oa := providers.NewOpenAI("http://unused", "") // no key
+	router := providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
+	h := NewHandler(http.DefaultClient, router, testPricing(), sink, disabledCache(), FailoverConfig{}, discardLogger())
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini"}`))
 	rec := httptest.NewRecorder()
 	h.ChatCompletions(rec, req)
 

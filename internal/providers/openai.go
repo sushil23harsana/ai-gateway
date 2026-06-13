@@ -1,15 +1,15 @@
-// Package providers holds per-provider specifics: endpoints, auth, and how to
-// read token usage out of a response. Phase 1 ships only OpenAI; Phase 4 will
-// extract a shared Provider interface and add Anthropic.
 package providers
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 )
 
-// OpenAI describes how to reach the OpenAI chat/completions endpoint and parse
-// its responses. The API key is held here but never logged or returned.
+// OpenAI is the OpenAI provider. The gateway's unified shape *is* OpenAI's
+// chat/completions shape, so its request/response translation is passthrough.
 type OpenAI struct {
 	baseURL string
 	apiKey  string
@@ -24,21 +24,34 @@ func NewOpenAI(baseURL, apiKey string) *OpenAI {
 	return &OpenAI{baseURL: baseURL, apiKey: apiKey}
 }
 
-// Name is the provider identifier stored in request_logs.
-func (o *OpenAI) Name() string { return "openai" }
-
-// APIKey returns the configured key (used to set the upstream Authorization
-// header server-side). Empty means the gateway is not configured for OpenAI.
-func (o *OpenAI) APIKey() string { return o.apiKey }
+func (o *OpenAI) Name() string            { return "openai" }
+func (o *OpenAI) APIKey() string          { return o.apiKey }
+func (o *OpenAI) SupportsStreaming() bool { return true }
 
 // ChatCompletionsURL is the upstream endpoint the proxy forwards to.
 func (o *OpenAI) ChatCompletionsURL() string { return o.baseURL + "/chat/completions" }
 
-// Usage is the token accounting parsed from a chat/completions response.
-type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	CachedTokens     int // OpenAI prompt-cache hits (usage.prompt_tokens_details.cached_tokens)
+// BuildUpstreamRequest forwards the unified body unchanged, injecting the key.
+func (o *OpenAI) BuildUpstreamRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.ChatCompletionsURL(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+o.apiKey) // injected server-side
+	return req, nil
+}
+
+// TranslateResponse is passthrough for OpenAI; it parses usage on success.
+func (o *OpenAI) TranslateResponse(status int, raw []byte) ([]byte, Usage, string, error) {
+	if status < 200 || status >= 300 {
+		return raw, Usage{}, "", nil
+	}
+	usage, model, err := o.ParseUsage(raw)
+	if err != nil {
+		return raw, Usage{}, "", err
+	}
+	return raw, usage, model, nil
 }
 
 // ParseUsage extracts token usage and the resolved model from an OpenAI
