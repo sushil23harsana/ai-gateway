@@ -241,6 +241,7 @@ table.keys th.r,
 table.keys td.r {
   text-align: right;
   padding-right: 0;
+  padding-left: 22px;
 }
 table.keys td {
   padding: 13px 14px 13px 0;
