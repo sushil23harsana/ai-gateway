@@ -101,10 +101,14 @@ func run() error {
 	respCache := cache.New(rdb, cfg.CacheTTLSeconds, cfg.CacheScope, cfg.CacheMaxBytes, cfg.CacheEnabled, logger)
 	logger.Info("response cache", "enabled", respCache.Enabled(), "scope", string(respCache.Scope()), "ttl_seconds", cfg.CacheTTLSeconds)
 
+	embedder := cache.NewOpenAIEmbedder(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.EmbeddingModel, &http.Client{Timeout: 30 * time.Second})
+	semantic := cache.NewSemantic(st, embedder, cfg.SemanticThreshold, cfg.CacheScope, cfg.SemanticCacheEnabled, logger)
+	logger.Info("semantic cache", "enabled", semantic.Enabled(), "threshold", cfg.SemanticThreshold, "embedding_model", cfg.EmbeddingModel)
+
 	failover := proxy.FailoverConfig{Enabled: cfg.FailoverEnabled, Provider: cfg.FailoverProvider, Model: cfg.FailoverModel}
 	logger.Info("routing", "default_provider", cfg.DefaultProvider, "failover_enabled", failover.Enabled, "failover_provider", failover.Provider, "failover_model", failover.Model)
 
-	proxyHandler := proxy.NewHandler(upstream, router, cfg.Pricing, mlogger, respCache, failover, logger)
+	proxyHandler := proxy.NewHandler(upstream, router, cfg.Pricing, mlogger, respCache, semantic, failover, logger)
 
 	authenticator := keys.NewAuthenticator(st, logger)
 	limiter := ratelimit.NewLimiter(rdb)

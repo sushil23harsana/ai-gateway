@@ -32,12 +32,20 @@ type LogSink interface {
 	Enqueue(store.RequestLog)
 }
 
-// ResponseCache is the response-cache behavior the handler needs.
+// ResponseCache is the exact-match response-cache behavior the handler needs.
 type ResponseCache interface {
 	Enabled() bool
 	Key(apiKeyID, provider string, body []byte) (string, bool)
 	Get(ctx context.Context, key string) (*cache.Entry, bool, error)
 	Set(ctx context.Context, key string, e cache.Entry) error
+}
+
+// SemanticCache serves near-duplicate prompts from a vector store. Lookup also
+// returns the computed embedding so it can be reused by Store on a miss.
+type SemanticCache interface {
+	Enabled() bool
+	Lookup(ctx context.Context, apiKeyID, provider, model, prompt string) (*cache.Entry, []float32, bool, error)
+	Store(ctx context.Context, apiKeyID, provider, model string, embedding []float32, body string, tokensIn, tokensOut int) error
 }
 
 // Router selects a provider for a model.
@@ -60,13 +68,14 @@ type Handler struct {
 	pricing  config.Pricing
 	sink     LogSink
 	cache    ResponseCache
+	semantic SemanticCache
 	failover FailoverConfig
 	log      *slog.Logger
 }
 
 // NewHandler wires the proxy dependencies.
-func NewHandler(client *http.Client, router Router, pricing config.Pricing, sink LogSink, c ResponseCache, failover FailoverConfig, log *slog.Logger) *Handler {
-	return &Handler{client: client, router: router, pricing: pricing, sink: sink, cache: c, failover: failover, log: log}
+func NewHandler(client *http.Client, router Router, pricing config.Pricing, sink LogSink, c ResponseCache, semantic SemanticCache, failover FailoverConfig, log *slog.Logger) *Handler {
+	return &Handler{client: client, router: router, pricing: pricing, sink: sink, cache: c, semantic: semantic, failover: failover, log: log}
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -112,7 +121,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache lookup (scoped by the primary provider).
+	// Exact-match cache lookup (scoped by the primary provider).
 	var cacheKey string
 	if h.cache.Enabled() && keyCacheEnabled {
 		if k, ok := h.cache.Key(deref(apiKeyID), primary.Name(), body); ok {
@@ -120,8 +129,25 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if entry, hit, gerr := h.cache.Get(r.Context(), cacheKey); gerr != nil {
 				h.log.Warn("cache get failed; treating as miss", "err", gerr)
 			} else if hit {
-				h.serveFromCache(w, start, apiKeyID, primary.Name(), entry)
+				h.serveCached(w, start, apiKeyID, primary.Name(), entry, "HIT")
 				return
+			}
+		}
+	}
+
+	// Semantic cache lookup (near-duplicate prompts) — after an exact miss. The
+	// embedding is kept so a miss can reuse it for the store below.
+	var semEmbedding []float32
+	if h.semantic.Enabled() && keyCacheEnabled {
+		if prompt := cache.PromptText(body); prompt != "" {
+			entry, emb, hit, serr := h.semantic.Lookup(r.Context(), deref(apiKeyID), primary.Name(), meta.Model, prompt)
+			if serr != nil {
+				h.log.Warn("semantic lookup failed; treating as miss", "err", serr)
+			} else if hit {
+				h.serveCached(w, start, apiKeyID, primary.Name(), entry, "SEMANTIC")
+				return
+			} else {
+				semEmbedding = emb
 			}
 		}
 	}
@@ -210,6 +236,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("cache set failed", "err", serr)
 		}
 	}
+
+	// Store semantically too (reusing the lookup embedding) — primary path only.
+	if len(semEmbedding) > 0 && used.Name() == primary.Name() && status >= 200 && status < 300 {
+		if serr := h.semantic.Store(r.Context(), deref(apiKeyID), primary.Name(), meta.Model, semEmbedding, string(unified), usage.PromptTokens, usage.CompletionTokens); serr != nil {
+			h.log.Warn("semantic store failed", "err", serr)
+		}
+	}
 }
 
 // doUpstream builds and executes a provider request, returning status, raw body,
@@ -273,14 +306,15 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, p providers.Pro
 	})
 }
 
-// serveFromCache returns a cached response and logs a cache hit (cost 0).
-func (h *Handler) serveFromCache(w http.ResponseWriter, start time.Time, apiKeyID *string, provider string, e *cache.Entry) {
+// serveCached returns a cached response and logs a cache hit (cost 0). xcache is
+// the X-Cache header value: "HIT" (exact) or "SEMANTIC" (near-duplicate).
+func (h *Handler) serveCached(w http.ResponseWriter, start time.Time, apiKeyID *string, provider string, e *cache.Entry, xcache string) {
 	ct := e.ContentType
 	if ct == "" {
 		ct = "application/json"
 	}
 	w.Header().Set("Content-Type", ct)
-	w.Header().Set("X-Cache", "HIT")
+	w.Header().Set("X-Cache", xcache)
 	w.WriteHeader(e.Status)
 	_, _ = io.WriteString(w, e.Body)
 

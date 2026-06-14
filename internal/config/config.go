@@ -47,6 +47,11 @@ type Config struct {
 	CacheScope      string // "key" (per-virtual-key, isolated) | "global" (shared)
 	CacheMaxBytes   int    // responses larger than this are not cached
 
+	// Semantic cache (pgvector + embeddings) — opt-in, off by default.
+	SemanticCacheEnabled bool
+	SemanticThreshold    float64 // max cosine distance for a near-duplicate hit (smaller = stricter)
+	EmbeddingModel       string
+
 	// Pricing table (loaded from PricingPath).
 	PricingPath string
 	Pricing     Pricing
@@ -112,7 +117,12 @@ func Load() (*Config, error) {
 		CacheEnabled:    getenvBool("CACHE_ENABLED", true),
 		CacheScope:      getenv("CACHE_SCOPE", "key"),
 		CacheMaxBytes:   getenvInt("CACHE_MAX_BYTES", 1<<20),
-		PricingPath:     getenv("PRICING_PATH", "pricing.yaml"),
+
+		SemanticCacheEnabled: getenvBool("SEMANTIC_CACHE_ENABLED", false),
+		SemanticThreshold:    getenvFloat("SEMANTIC_THRESHOLD", 0.05),
+		EmbeddingModel:       getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+
+		PricingPath: getenv("PRICING_PATH", "pricing.yaml"),
 	}
 
 	pricing, err := LoadPricing(c.PricingPath)
@@ -177,6 +187,19 @@ func getenvBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func getenvFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Warn("invalid float env var; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return f
 }
 
 func parseLevel(s string) slog.Level {

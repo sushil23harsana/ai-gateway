@@ -39,6 +39,30 @@ func (f *fakeCache) Set(_ context.Context, _ string, e cache.Entry) error {
 	return nil
 }
 
+// fakeSemantic implements SemanticCache for tests.
+type fakeSemantic struct {
+	enabled bool
+	entry   *cache.Entry
+	hit     bool
+	stores  int
+}
+
+func (f *fakeSemantic) Enabled() bool { return f.enabled }
+func (f *fakeSemantic) Lookup(_ context.Context, _, _, _, _ string) (*cache.Entry, []float32, bool, error) {
+	return f.entry, []float32{0.1, 0.2, 0.3}, f.hit, nil
+}
+func (f *fakeSemantic) Store(_ context.Context, _, _, _ string, _ []float32, _ string, _, _ int) error {
+	f.stores++
+	return nil
+}
+
+func disabledSemantic() *fakeSemantic { return &fakeSemantic{enabled: false} }
+
+func oneProviderRouter(baseURL string) *providers.Router {
+	oa := providers.NewOpenAI(baseURL, "test-key")
+	return providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
+}
+
 func testPricing() config.Pricing {
 	return config.Pricing{Models: map[string]config.ModelPricing{
 		"gpt-4o-mini":      {Provider: "openai", InPer1K: 0.00015, OutPer1K: 0.0006},
@@ -49,9 +73,7 @@ func testPricing() config.Pricing {
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func newTestHandler(client *http.Client, baseURL string, sink LogSink, c ResponseCache) *Handler {
-	oa := providers.NewOpenAI(baseURL, "test-key")
-	router := providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
-	return NewHandler(client, router, testPricing(), sink, c, FailoverConfig{}, discardLogger())
+	return NewHandler(client, oneProviderRouter(baseURL), testPricing(), sink, c, disabledSemantic(), FailoverConfig{}, discardLogger())
 }
 
 func disabledCache() *fakeCache { return &fakeCache{enabled: false} }
@@ -182,7 +204,7 @@ func TestFailoverOnPrimary5xx(t *testing.T) {
 	an := providers.NewAnthropic(anthropicSrv.URL, "an-key", "2023-06-01", 1024)
 	router := providers.NewRouter([]providers.Provider{oa, an}, testPricing().ProviderMap(), "openai")
 	sink := &fakeSink{}
-	h := NewHandler(&http.Client{}, router, testPricing(), sink, disabledCache(),
+	h := NewHandler(&http.Client{}, router, testPricing(), sink, disabledCache(), disabledSemantic(),
 		FailoverConfig{Enabled: true, Provider: "anthropic", Model: "claude-haiku-4-5"}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -209,6 +231,65 @@ func TestFailoverOnPrimary5xx(t *testing.T) {
 	if sink.logs[1].Provider != "anthropic" || sink.logs[1].Status != 200 ||
 		sink.logs[1].TokensIn != 8 || sink.logs[1].TokensOut != 3 {
 		t.Errorf("second log should be the successful anthropic attempt: %+v", sink.logs[1])
+	}
+}
+
+func TestSemanticHitSkipsUpstream(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	sink := &fakeSink{}
+	sem := &fakeSemantic{enabled: true, hit: true, entry: &cache.Entry{
+		Status: 200, ContentType: "application/json",
+		Body: `{"semantic":true}`, Model: "gpt-4o-mini", TokensIn: 4, TokensOut: 6,
+	}}
+	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, discardLogger())
+
+	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi there"}]}`)))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	if upstreamCalled {
+		t.Error("semantic hit must NOT call the provider")
+	}
+	if rec.Header().Get("X-Cache") != "SEMANTIC" {
+		t.Errorf("X-Cache = %q, want SEMANTIC", rec.Header().Get("X-Cache"))
+	}
+	if rec.Body.String() != `{"semantic":true}` {
+		t.Errorf("body = %q, want cached semantic body", rec.Body.String())
+	}
+	if len(sink.logs) != 1 || !sink.logs[0].CacheHit || sink.logs[0].CostUSD != 0 {
+		t.Fatalf("expected 1 cache-hit log with cost 0, got %+v", sink.logs)
+	}
+}
+
+func TestSemanticMissStoresAfterProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"gpt-4o-mini","usage":{"prompt_tokens":5,"completion_tokens":6}}`)
+	}))
+	defer upstream.Close()
+
+	sink := &fakeSink{}
+	sem := &fakeSemantic{enabled: true, hit: false}
+	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, discardLogger())
+
+	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi there"}]}`)))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if sem.stores != 1 {
+		t.Errorf("expected 1 semantic Store on miss, got %d", sem.stores)
 	}
 }
 
@@ -243,7 +324,7 @@ func TestChatCompletionsMissingKeyReturns500(t *testing.T) {
 	sink := &fakeSink{}
 	oa := providers.NewOpenAI("http://unused", "") // no key
 	router := providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
-	h := NewHandler(http.DefaultClient, router, testPricing(), sink, disabledCache(), FailoverConfig{}, discardLogger())
+	h := NewHandler(http.DefaultClient, router, testPricing(), sink, disabledCache(), disabledSemantic(), FailoverConfig{}, discardLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini"}`))
 	rec := httptest.NewRecorder()

@@ -15,7 +15,8 @@ services:
       retries: 10
 
   postgres:
-    image: postgres:16-alpine
+    # pgvector image (Postgres 16 + the `vector` extension) for semantic caching.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: gw
       POSTGRES_PASSWORD: gw
@@ -55,7 +56,17 @@ services:
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
+      CACHE_SCOPE: ${CACHE_SCOPE:-key}
       PRICING_PATH: /app/pricing.yaml
+      # Routing & failover
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-openai}
+      FAILOVER_ENABLED: ${FAILOVER_ENABLED:-true}
+      FAILOVER_PROVIDER: ${FAILOVER_PROVIDER:-}
+      FAILOVER_MODEL: ${FAILOVER_MODEL:-}
+      # Semantic cache (opt-in)
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.05}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
     depends_on:
       redis:
         condition: service_healthy

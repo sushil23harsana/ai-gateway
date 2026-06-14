@@ -14,4 +14,4 @@ The full spec is in [BUILD.md](../BUILD.md).
 | 3 | [phase-3.md](phase-3.md) | Exact-match response caching in Redis (per-key scope, TTL, toggle) — skips the provider on a hit. |
 | 4 | [phase-4.md](phase-4.md) | `Provider` interface + native Anthropic (OpenAI⇄Messages translation) + model routing + 5xx/timeout failover. (Anthropic live check pending key.) |
 | 5 | [phase-5.md](phase-5.md) | `/admin/stats/*` Go API + Redis live counter, and a Next.js 14 + Recharts dashboard that renders it. |
-| 6 | _pending_ | Stretch: semantic cache, SSE streaming token accounting, budget alerts, load test. |
+| 6 | [phase-6.md](phase-6.md) | **Semantic caching** (pgvector + embeddings) — serves near-duplicate prompts, rejects different-answer lookalikes. (Other stretch items: SSE tokens, budget alerts, load test.) |

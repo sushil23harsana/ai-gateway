@@ -31,7 +31,9 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
 - [x] **Phase 5 — Next.js dashboard:** `/admin/stats/*` Go API + Redis live counter,
       and a Next.js 14 + Recharts console (overview tiles, spend/cost charts, per-key
       budgets, live req/min) at `:3000` — renders real traffic.
-- [ ] **Phase 6 — Stretch** (semantic cache, SSE streaming, budget alerts, load test).
+- [x] **Phase 6 — Semantic caching:** pgvector + OpenAI embeddings serve near-duplicate
+      prompts (`X-Cache: SEMANTIC`), with a calibrated threshold that rejects different-answer
+      lookalikes. *(Other stretch items — SSE token accounting, budget alerts, load test — remain.)*
 
 ---
 
