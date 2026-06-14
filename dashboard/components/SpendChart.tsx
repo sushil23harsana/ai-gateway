@@ -22,21 +22,33 @@ function Tip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   return (
-    <div className="chart-tip">
-      <div>{p.t}</div>
+    <div
+      style={{
+        background: "var(--surface-3)",
+        border: "1px solid var(--border-default)",
+        borderRadius: 10,
+        padding: "9px 11px",
+        fontSize: 12,
+        fontFamily: "var(--font-mono)",
+        color: "var(--text-primary)",
+      }}
+    >
+      <div style={{ color: "var(--text-secondary)" }}>{p.t}</div>
       <div>
-        <span className="k">reqs </span>
+        <span style={{ color: "var(--violet-300)" }}>reqs </span>
         {p.requests}
       </div>
       <div>
-        <span className="k">cost </span>${Number(p.cost).toFixed(6)}
+        <span style={{ color: "var(--cyan-400)" }}>cost </span>${Number(p.cost).toFixed(6)}
       </div>
     </div>
   );
 }
 
 export default function SpendChart({ buckets, range }: { buckets: TimeBucket[]; range: string }) {
-  if (!buckets.length) return <div className="empty">no traffic in this window</div>;
+  if (!buckets.length) {
+    return <div style={{ color: "var(--text-tertiary)", fontSize: 13, padding: "40px 0", textAlign: "center" }}>no traffic in this window</div>;
+  }
 
   const data = buckets.map((b) => ({
     t: label(b.timestamp, range),
@@ -45,42 +57,30 @@ export default function SpendChart({ buckets, range }: { buckets: TimeBucket[]; 
   }));
 
   return (
-    <>
-      <ResponsiveContainer width="100%" height={230}>
-        <ComposedChart data={data} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
-          <defs>
-            <linearGradient id="reqFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#c8f23e" stopOpacity={0.32} />
-              <stop offset="100%" stopColor="#c8f23e" stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid stroke="#1a1d25" vertical={false} />
-          <XAxis dataKey="t" tickLine={false} axisLine={{ stroke: "#21252e" }} minTickGap={26} />
-          <YAxis yAxisId="l" tickLine={false} axisLine={false} width={34} allowDecimals={false} />
-          <YAxis yAxisId="r" orientation="right" hide />
-          <Tooltip content={<Tip />} cursor={{ stroke: "#2a2f3a" }} />
-          <Area
-            yAxisId="l"
-            type="monotone"
-            dataKey="requests"
-            stroke="#c8f23e"
-            strokeWidth={2}
-            fill="url(#reqFill)"
-            activeDot={{ r: 3, fill: "#c8f23e" }}
-          />
-          <Line yAxisId="r" type="monotone" dataKey="cost" stroke="#f5b14c" strokeWidth={1.5} dot={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-      <div className="legend">
-        <span>
-          <i className="swatch" style={{ background: "#c8f23e" }} />
-          requests
-        </span>
-        <span>
-          <i className="swatch" style={{ background: "#f5b14c" }} />
-          spend (usd)
-        </span>
-      </div>
-    </>
+    <ResponsiveContainer width="100%" height={230}>
+      <ComposedChart data={data} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
+        <defs>
+          <linearGradient id="reqFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#8a5cf6" stopOpacity={0.4} />
+            <stop offset="100%" stopColor="#8a5cf6" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+        <XAxis dataKey="t" tickLine={false} axisLine={{ stroke: "rgba(255,255,255,0.08)" }} minTickGap={26} />
+        <YAxis yAxisId="l" tickLine={false} axisLine={false} width={34} allowDecimals={false} />
+        <YAxis yAxisId="r" orientation="right" hide />
+        <Tooltip content={<Tip />} cursor={{ stroke: "rgba(255,255,255,0.12)" }} />
+        <Area
+          yAxisId="l"
+          type="monotone"
+          dataKey="requests"
+          stroke="#8a5cf6"
+          strokeWidth={2}
+          fill="url(#reqFill)"
+          activeDot={{ r: 3, fill: "#9b7dff" }}
+        />
+        <Line yAxisId="r" type="monotone" dataKey="cost" stroke="#3fd8e0" strokeWidth={1.5} dot={false} />
+      </ComposedChart>
+    </ResponsiveContainer>
   );
 }

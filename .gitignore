@@ -24,3 +24,6 @@ dashboard/out/
 
 # Claude Code harness artifacts
 .claude/
+
+# Design-system handoff (reference only, not app code)
+*.zip

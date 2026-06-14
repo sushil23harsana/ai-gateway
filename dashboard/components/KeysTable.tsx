@@ -1,54 +1,84 @@
 import type { KeyStat } from "@/lib/types";
 import { num, usd } from "@/lib/format";
+import Badge from "./Badge";
+import ProgressBar from "./ProgressBar";
+
+const th: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 22px",
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: "var(--text-secondary)",
+};
+const td: React.CSSProperties = {
+  padding: "14px 22px",
+  fontSize: 14,
+  color: "var(--text-primary)",
+  borderTop: "1px solid var(--border-subtle)",
+};
+const r: React.CSSProperties = { textAlign: "right" };
 
 export default function KeysTable({ keys }: { keys: KeyStat[] }) {
   if (!keys.length) {
-    return <div className="empty">no virtual keys yet — mint one via POST /admin/keys</div>;
+    return (
+      <div style={{ color: "var(--text-tertiary)", fontSize: 13, padding: "28px 22px" }}>
+        no virtual keys yet — mint one via POST /admin/keys
+      </div>
+    );
   }
 
   return (
-    <table className="keys">
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
       <thead>
         <tr>
-          <th>Key</th>
-          <th className="r">RPM</th>
-          <th>Budget (month)</th>
-          <th className="r">Month</th>
-          <th className="r">Total</th>
-          <th className="r">Reqs</th>
-          <th className="r">Status</th>
+          <th style={th}>Key</th>
+          <th style={{ ...th, ...r }}>RPM</th>
+          <th style={{ ...th, width: "24%" }}>Budget (month)</th>
+          <th style={{ ...th, ...r }}>Month</th>
+          <th style={{ ...th, ...r }}>Total</th>
+          <th style={{ ...th, ...r }}>Reqs</th>
+          <th style={{ ...th, ...r }}>Status</th>
         </tr>
       </thead>
       <tbody>
         {keys.map((k) => {
           const ratio = k.monthly_budget_usd ? k.month_cost_usd / k.monthly_budget_usd : 0;
-          const cls = ratio >= 1 ? "over" : ratio >= 0.8 ? "warn" : "";
+          const tone = ratio >= 1 ? "negative" : ratio >= 0.8 ? "warning" : "positive";
           return (
             <tr key={k.id}>
-              <td className="name">{k.name}</td>
-              <td className="r">{k.rate_limit_rpm}</td>
-              <td>
+              <td style={{ ...td, fontWeight: 600 }}>{k.name}</td>
+              <td className="mono" style={{ ...td, ...r, color: "var(--text-secondary)" }}>
+                {k.rate_limit_rpm}
+              </td>
+              <td style={td}>
                 {k.monthly_budget_usd ? (
-                  <div className="budget">
-                    <div className="budget-bar">
-                      <div
-                        className={`budget-fill ${cls}`}
-                        style={{ width: `${Math.min(100, ratio * 100)}%` }}
-                      />
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 90 }}>
+                      <ProgressBar value={ratio * 100} tone={tone} height={6} glow={false} />
                     </div>
-                    <span>{usd(k.monthly_budget_usd)}</span>
+                    <span className="mono" style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                      {usd(k.monthly_budget_usd)}
+                    </span>
                   </div>
                 ) : (
-                  <span style={{ color: "var(--faint)" }}>— no cap</span>
+                  <span style={{ color: "var(--text-tertiary)" }}>— no cap</span>
                 )}
               </td>
-              <td className="r">{usd(k.month_cost_usd)}</td>
-              <td className="r">{usd(k.total_cost_usd)}</td>
-              <td className="r">{num(k.requests)}</td>
-              <td className="r">
-                <span className={`pill ${k.disabled ? "off" : ""}`}>
+              <td className="mono" style={{ ...td, ...r }}>
+                {usd(k.month_cost_usd)}
+              </td>
+              <td className="mono" style={{ ...td, ...r, color: "var(--text-secondary)" }}>
+                {usd(k.total_cost_usd)}
+              </td>
+              <td className="mono" style={{ ...td, ...r, color: "var(--text-secondary)" }}>
+                {num(k.requests)}
+              </td>
+              <td style={{ ...td, ...r }}>
+                <Badge tone={k.disabled ? "negative" : "positive"} dot>
                   {k.disabled ? "disabled" : "active"}
-                </span>
+                </Badge>
               </td>
             </tr>
           );

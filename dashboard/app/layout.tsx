@@ -1,29 +1,29 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 
-const mono = IBM_Plex_Mono({
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-plex-mono",
+  weight: ["400", "500", "600", "700", "800"],
+  variable: "--font-inter",
   display: "swap",
 });
 
-const sans = IBM_Plex_Sans({
+const jbmono = JetBrains_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
-  variable: "--font-plex-sans",
+  variable: "--font-jbmono",
   display: "swap",
 });
 
 export const metadata: Metadata = {
   title: "AI Gateway · Console",
-  description: "Cost, cache, and rate-limit analytics for the AI Gateway.",
+  description: "Cost, cache, and routing analytics for the AI Gateway.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${mono.variable} ${sans.variable}`}>
+    <html lang="en" className={`${inter.variable} ${jbmono.variable}`}>
       <body>{children}</body>
     </html>
   );
