@@ -17,8 +17,8 @@ const jbmono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Gateway · Console",
-  description: "Cost, cache, and routing analytics for the AI Gateway.",
+  title: "Janus · AI Gateway",
+  description: "Janus — a self-hosted LLM gateway: routing, caching, and cost analytics across OpenAI + Claude.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

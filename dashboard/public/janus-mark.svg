@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="Janus">
+  <defs>
+    <filter id="jg" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b" />
+      <feMerge>
+        <feMergeNode in="b" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#jg)">
+    <path d="M14,88 L14,50 A36,36 0 0,1 48,14 L48,31 A19,19 0 0,0 31,50 L31,88 Z" fill="#8A5CF6" />
+    <path d="M86,88 L86,50 A36,36 0 0,0 52,14 L52,31 A19,19 0 0,1 69,50 L69,88 Z" fill="#5B6CFF" />
+  </g>
+</svg>

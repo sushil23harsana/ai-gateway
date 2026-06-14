@@ -1,14 +1,19 @@
-# AI Gateway
+# Janus
 
-A self-hostable **LLM gateway / proxy** that sits between your applications and
-LLM providers (OpenAI, Anthropic) and gives teams the control plane they're
-missing: **cost & token analytics, semantic caching, rate limiting, virtual API
-keys, and multi-provider failover** — all behind a real-time dashboard.
+> *Janus — the Roman god of gateways and transitions, with two faces. One
+> gateway between two providers.*
+
+**Janus** is a self-hostable **LLM gateway / proxy** that sits between your
+applications and LLM providers (OpenAI, Anthropic) and gives teams the control
+plane they're missing: **cost & token analytics, exact + semantic caching, rate
+limiting, virtual API keys, and multi-provider routing/failover** — all behind a
+real-time dashboard.
 
 Think *Helicone / LiteLLM, built from scratch* — a production-shaped systems
 project in Go.
 
 > **Author:** Sushil Harsana · **Module:** `github.com/sushil23harsana/ai-gateway`
+> (the Go module path keeps the original `ai-gateway` slug; the product is **Janus**)
 
 ---
 

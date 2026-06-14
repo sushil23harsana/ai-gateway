@@ -60,26 +60,18 @@ export default function Sidebar() {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 8px 18px" }}>
-        <span
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 9,
-            background: "var(--gradient-violet)",
-            boxShadow: "var(--glow-violet-sm)",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontWeight: 800,
-            fontSize: 16,
-          }}
-        >
-          ◇
-        </span>
-        <span style={{ color: "var(--text-primary)", fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" }}>
-          AI Gateway
-        </span>
+        <svg width="32" height="32" viewBox="0 0 100 100" aria-label="Janus" style={{ flexShrink: 0, filter: "drop-shadow(0 0 8px rgba(138,92,246,0.45))" }}>
+          <path d="M14,88 L14,50 A36,36 0 0,1 48,14 L48,31 A19,19 0 0,0 31,50 L31,88 Z" fill="#8a5cf6" />
+          <path d="M86,88 L86,50 A36,36 0 0,0 52,14 L52,31 A19,19 0 0,1 69,50 L69,88 Z" fill="#5b6cff" />
+        </svg>
+        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.05 }}>
+          <span style={{ color: "var(--text-primary)", fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" }}>
+            Janus
+          </span>
+          <span className="mono" style={{ color: "var(--text-tertiary)", fontSize: 10 }}>
+            ai gateway
+          </span>
+        </div>
         <span
           style={{
             marginLeft: "auto",

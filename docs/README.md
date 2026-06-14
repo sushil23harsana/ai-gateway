@@ -1,10 +1,12 @@
-# Phase docs
+# Janus — phase docs
 
-Per-phase notes so you can see what each phase actually did without re-reading
-the whole codebase. Each doc covers: what was built, which files changed, how
-the request flow works, how to run/verify it, key decisions, and what's deferred.
+Per-phase notes for **Janus** (the self-hosted LLM gateway) so you can see what
+each phase actually did without re-reading the whole codebase. Each doc covers:
+what was built, which files changed, how the request flow works, how to
+run/verify it, key decisions, and what's deferred.
 
-The full spec is in [BUILD.md](../BUILD.md).
+The full spec is in [BUILD.md](../BUILD.md). (The codebase/module still uses the
+original `ai-gateway` slug; the product brand is Janus.)
 
 | Phase | Doc | Summary |
 |-------|-----|---------|
