@@ -13,5 +13,5 @@ The full spec is in [BUILD.md](../BUILD.md).
 | 2 | [phase-2.md](phase-2.md) | Virtual keys (hashed) + admin API to mint them + Redis token-bucket rate limiting. |
 | 3 | [phase-3.md](phase-3.md) | Exact-match response caching in Redis (per-key scope, TTL, toggle) — skips the provider on a hit. |
 | 4 | [phase-4.md](phase-4.md) | `Provider` interface + native Anthropic (OpenAI⇄Messages translation) + model routing + 5xx/timeout failover. (Anthropic live check pending key.) |
-| 5 | _pending_ | Next.js dashboard. |
+| 5 | [phase-5.md](phase-5.md) | `/admin/stats/*` Go API + Redis live counter, and a Next.js 14 + Recharts dashboard that renders it. |
 | 6 | _pending_ | Stretch: semantic cache, SSE streaming token accounting, budget alerts, load test. |

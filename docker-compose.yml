@@ -70,5 +70,18 @@ services:
       retries: 5
       start_period: 5s
 
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      # Server-side only: the dashboard reaches the gateway over the compose
+      # network and holds ADMIN_TOKEN so the browser never sees it.
+      GATEWAY_URL: http://gateway:8080
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+    depends_on:
+      gateway:
+        condition: service_healthy
+
 volumes:
   pgdata:

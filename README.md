@@ -28,7 +28,9 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
 - [x] **Phase 4 — Multi-provider + routing/failover:** `Provider` interface, native
       Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover.
       *(OpenAI path + routing live-verified; real-Anthropic + failover demo pending `ANTHROPIC_API_KEY`.)*
-- [ ] **Phase 5 — Next.js dashboard.**
+- [x] **Phase 5 — Next.js dashboard:** `/admin/stats/*` Go API + Redis live counter,
+      and a Next.js 14 + Recharts console (overview tiles, spend/cost charts, per-key
+      budgets, live req/min) at `:3000` — renders real traffic.
 - [ ] **Phase 6 — Stretch** (semantic cache, SSE streaming, budget alerts, load test).
 
 ---
@@ -63,14 +65,17 @@ cp .env.example .env        # then fill in provider keys as you reach Phase 1+
 docker compose up -d --build
 ```
 
-This starts Redis and Postgres, runs DB migrations once, and starts the gateway.
-Verify the health endpoint:
+This starts Redis, Postgres, the gateway, and the dashboard (and runs DB
+migrations once). Verify the health endpoint:
 
 ```bash
 curl -i http://localhost:8080/healthz
 # HTTP/1.1 200 OK
 # {"status":"ok"}
 ```
+
+Then open the **dashboard** at <http://localhost:3000> for cost, cache, latency,
+and per-key analytics.
 
 Tear down with `docker compose down` (add `-v` to also drop the Postgres volume).
 
