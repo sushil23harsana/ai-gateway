@@ -31,8 +31,10 @@ overview's spend reflects real provider charges only.
 
 ## Part 2 — dashboard (Next.js)
 
-A dark "control-room" console: IBM Plex Mono numerals, an acid-lime accent, a
-hairline grid background, and a staggered page-load reveal.
+The UI follows the supplied design system (commit `58736e4`): a deep-dark canvas
+with a violet accent, Inter + JetBrains Mono (tabular numerals), glows-over-shadows
+cards with 1px inner borders, and a sidebar + glass-topbar shell. Branding is
+neutral ("AI Gateway", self-hosted).
 
 | File | What it does |
 |------|--------------|
