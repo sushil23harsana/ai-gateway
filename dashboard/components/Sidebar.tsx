@@ -1,29 +1,25 @@
-import {
-  LayoutDashboard,
-  Route,
-  ScrollText,
-  Database,
-  KeyRound,
-  Wallet,
-  Settings,
-} from "lucide-react";
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { LayoutDashboard, Route, ScrollText, Database, KeyRound } from "lucide-react";
 import type { ReactNode } from "react";
 
 const NAV = [
-  { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} />, active: true },
-  { id: "routes", label: "Routes", icon: <Route size={18} /> },
-  { id: "logs", label: "Live Logs", icon: <ScrollText size={18} /> },
-  { id: "caches", label: "Caches", icon: <Database size={18} /> },
-  { id: "keys", label: "API Keys", icon: <KeyRound size={18} /> },
-];
-const BOTTOM = [
-  { id: "usage", label: "Usage & Billing", icon: <Wallet size={18} /> },
-  { id: "settings", label: "Settings", icon: <Settings size={18} /> },
+  { href: "/", label: "Overview", icon: <LayoutDashboard size={18} /> },
+  { href: "/routes", label: "Routing", icon: <Route size={18} /> },
+  { href: "/logs", label: "Live Logs", icon: <ScrollText size={18} /> },
+  { href: "/caches", label: "Caches", icon: <Database size={18} /> },
+  { href: "/keys", label: "API Keys", icon: <KeyRound size={18} /> },
 ];
 
-function NavItem({ icon, label, href, active }: { icon: ReactNode; label: string; href: string; active?: boolean }) {
+function isActive(pathname: string, href: string): boolean {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+}
+
+function NavLink({ href, icon, label, active }: { href: string; icon: ReactNode; label: string; active: boolean }) {
   return (
-    <a
+    <Link
       href={href}
       style={{
         display: "flex",
@@ -38,15 +34,17 @@ function NavItem({ icon, label, href, active }: { icon: ReactNode; label: string
         color: active ? "var(--text-primary)" : "var(--text-secondary)",
         background: active ? "var(--fill-violet)" : "transparent",
         boxShadow: active ? "var(--glow-nav-active)" : "none",
+        transition: "var(--transition-base)",
       }}
     >
       <span style={{ display: "inline-flex", color: active ? "var(--violet-300)" : "inherit" }}>{icon}</span>
       <span style={{ flex: 1, whiteSpace: "nowrap" }}>{label}</span>
-    </a>
+    </Link>
   );
 }
 
 export default function Sidebar() {
+  const pathname = usePathname() || "/";
   return (
     <aside
       className="nx-sidebar"
@@ -101,14 +99,23 @@ export default function Sidebar() {
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {NAV.map((n) => (
-          <NavItem key={n.id} icon={n.icon} label={n.label} href="#" active={n.active} />
+          <NavLink key={n.href} href={n.href} icon={n.icon} label={n.label} active={isActive(pathname, n.href)} />
         ))}
       </nav>
 
-      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-        {BOTTOM.map((n) => (
-          <NavItem key={n.id} icon={n.icon} label={n.label} href="#" />
-        ))}
+      <div
+        style={{
+          marginTop: "auto",
+          padding: "12px",
+          borderRadius: "var(--radius-md)",
+          background: "var(--surface-inset)",
+          boxShadow: "var(--inner-border)",
+          color: "var(--text-tertiary)",
+          fontSize: 11,
+          lineHeight: 1.5,
+        }}
+      >
+        Self-hosted LLM gateway · OpenAI + Claude routing, caching &amp; cost analytics.
       </div>
     </aside>
   );

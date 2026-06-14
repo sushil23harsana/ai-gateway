@@ -167,6 +167,90 @@ func (s *Store) StatsByProvider(ctx context.Context) ([]ProviderStat, error) {
 	return out, rows.Err()
 }
 
+// RecentRequest is one row for the live-logs view (joined to the key name).
+type RecentRequest struct {
+	CreatedAt time.Time `json:"created_at"`
+	KeyName   *string   `json:"key_name,omitempty"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	Status    int       `json:"status"`
+	CacheHit  bool      `json:"cache_hit"`
+	TokensIn  int       `json:"tokens_in"`
+	TokensOut int       `json:"tokens_out"`
+	CostUSD   float64   `json:"cost_usd"`
+	LatencyMs int       `json:"latency_ms"`
+	Error     *string   `json:"error,omitempty"`
+}
+
+// RecentRequests returns the most recent request_logs rows (newest first).
+func (s *Store) RecentRequests(ctx context.Context, limit int) ([]RecentRequest, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	const q = `
+		SELECT r.created_at, k.name, r.provider, r.model, r.status, r.cache_hit,
+		       r.tokens_in, r.tokens_out, r.cost_usd, r.latency_ms, r.error
+		FROM request_logs r
+		LEFT JOIN api_keys k ON k.id = r.api_key_id
+		ORDER BY r.created_at DESC
+		LIMIT $1`
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent requests: %w", err)
+	}
+	defer rows.Close()
+
+	out := []RecentRequest{}
+	for rows.Next() {
+		var r RecentRequest
+		if err := rows.Scan(&r.CreatedAt, &r.KeyName, &r.Provider, &r.Model, &r.Status, &r.CacheHit,
+			&r.TokensIn, &r.TokensOut, &r.CostUSD, &r.LatencyMs, &r.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SemanticEntry summarizes one stored semantic-cache row.
+type SemanticEntry struct {
+	CreatedAt time.Time `json:"created_at"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	TokensIn  int       `json:"tokens_in"`
+	TokensOut int       `json:"tokens_out"`
+}
+
+// CacheStats is the data for the Caches view.
+type CacheStats struct {
+	SemanticEntries int             `json:"semantic_entries"`
+	RecentSemantic  []SemanticEntry `json:"recent_semantic"`
+}
+
+// CacheStats returns semantic-cache size + a recent sample.
+func (s *Store) CacheStats(ctx context.Context) (CacheStats, error) {
+	var cs CacheStats
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM semantic_cache`).Scan(&cs.SemanticEntries); err != nil {
+		return CacheStats{}, fmt.Errorf("cache stats count: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT created_at, provider, model, tokens_in, tokens_out
+		FROM semantic_cache ORDER BY created_at DESC LIMIT 10`)
+	if err != nil {
+		return CacheStats{}, fmt.Errorf("cache stats recent: %w", err)
+	}
+	defer rows.Close()
+	cs.RecentSemantic = []SemanticEntry{}
+	for rows.Next() {
+		var e SemanticEntry
+		if err := rows.Scan(&e.CreatedAt, &e.Provider, &e.Model, &e.TokensIn, &e.TokensOut); err != nil {
+			return CacheStats{}, err
+		}
+		cs.RecentSemantic = append(cs.RecentSemantic, e)
+	}
+	return cs, rows.Err()
+}
+
 // StatsByKey returns per-key usage vs budget (all keys, even with no traffic).
 func (s *Store) StatsByKey(ctx context.Context) ([]KeyStat, error) {
 	const q = `

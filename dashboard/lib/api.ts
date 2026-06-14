@@ -1,6 +1,15 @@
 // Server-side gateway client. Holds ADMIN_TOKEN; only imported by server
 // components and route handlers, so the token never reaches the browser.
-import type { Overview, TimeBucket, ModelStat, ProviderStat, KeyStat, Live } from "./types";
+import type {
+  Overview,
+  TimeBucket,
+  ModelStat,
+  ProviderStat,
+  KeyStat,
+  Live,
+  RecentRequest,
+  CacheStats,
+} from "./types";
 
 const BASE = process.env.GATEWAY_URL ?? "http://localhost:8080";
 const TOKEN = process.env.ADMIN_TOKEN ?? "change-me";
@@ -48,6 +57,12 @@ export const getByProvider = () =>
   safe(get<{ providers: ProviderStat[] }>("/admin/stats/by-provider"), { providers: [] });
 
 export const getByKey = () => safe(get<{ keys: KeyStat[] }>("/admin/stats/by-key"), { keys: [] });
+
+export const getRecent = (limit = 60) =>
+  safe(get<{ requests: RecentRequest[] }>(`/admin/stats/recent?limit=${limit}`), { requests: [] });
+
+export const getCache = () =>
+  safe(get<CacheStats>("/admin/stats/cache"), { semantic_entries: 0, recent_semantic: [] });
 
 // probe returns whether the gateway answered (used to show a connection banner).
 export async function probe(): Promise<boolean> {

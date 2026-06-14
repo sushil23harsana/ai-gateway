@@ -130,6 +130,8 @@ func run() error {
 	mux.Handle("GET /admin/stats/by-model", adminAuth(http.HandlerFunc(statsHandler.ByModel)))
 	mux.Handle("GET /admin/stats/by-provider", adminAuth(http.HandlerFunc(statsHandler.ByProvider)))
 	mux.Handle("GET /admin/stats/by-key", adminAuth(http.HandlerFunc(statsHandler.ByKey)))
+	mux.Handle("GET /admin/stats/recent", adminAuth(http.HandlerFunc(statsHandler.Recent)))
+	mux.Handle("GET /admin/stats/cache", adminAuth(http.HandlerFunc(statsHandler.Cache)))
 	mux.Handle("GET /admin/stats/live", adminAuth(http.HandlerFunc(statsHandler.Live)))
 
 	// Proxy: authenticate the virtual key, rate-limit per key, count for the live

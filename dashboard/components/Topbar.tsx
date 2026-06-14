@@ -4,12 +4,14 @@ import LiveChip from "./LiveChip";
 export default function Topbar({
   title,
   subtitle,
-  range,
+  range = "24h",
+  showRange = false,
   connected,
 }: {
   title: string;
   subtitle: string;
-  range: string;
+  range?: string;
+  showRange?: boolean;
   connected: boolean;
 }) {
   return (
@@ -49,7 +51,7 @@ export default function Topbar({
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
         <LiveChip />
-        <RangePills active={range} />
+        {showRange ? <RangePills active={range} /> : null}
         <span
           style={{
             display: "inline-flex",

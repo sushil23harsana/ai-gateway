@@ -34,6 +34,12 @@ func (f *fakeStatsStore) StatsByProvider(context.Context) ([]store.ProviderStat,
 	return f.byProvider, nil
 }
 func (f *fakeStatsStore) StatsByKey(context.Context) ([]store.KeyStat, error) { return f.byKey, nil }
+func (f *fakeStatsStore) RecentRequests(context.Context, int) ([]store.RecentRequest, error) {
+	return nil, nil
+}
+func (f *fakeStatsStore) CacheStats(context.Context) (store.CacheStats, error) {
+	return store.CacheStats{}, nil
+}
 
 type fakeLive struct{ recent []metrics.MinuteCount }
 

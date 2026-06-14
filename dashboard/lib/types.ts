@@ -33,3 +33,25 @@ export type KeyStat = {
 };
 export type MinuteCount = { timestamp: number; count: number };
 export type Live = { current_per_minute: number; recent: MinuteCount[] };
+
+export type RecentRequest = {
+  created_at: string;
+  key_name?: string;
+  provider: string;
+  model: string;
+  status: number;
+  cache_hit: boolean;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  latency_ms: number;
+  error?: string;
+};
+export type SemanticEntry = {
+  created_at: string;
+  provider: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+};
+export type CacheStats = { semantic_entries: number; recent_semantic: SemanticEntry[] };

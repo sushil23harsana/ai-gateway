@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/sushil23harsana/ai-gateway/internal/metrics"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
@@ -16,6 +17,8 @@ type StatsStore interface {
 	StatsByModel(ctx context.Context) ([]store.ModelStat, error)
 	StatsByProvider(ctx context.Context) ([]store.ProviderStat, error)
 	StatsByKey(ctx context.Context) ([]store.KeyStat, error)
+	RecentRequests(ctx context.Context, limit int) ([]store.RecentRequest, error)
+	CacheStats(ctx context.Context) (store.CacheStats, error)
 }
 
 // LiveReader exposes recent per-minute request counts.
@@ -87,6 +90,32 @@ func (h *Stats) ByKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": rows})
+}
+
+// Recent handles GET /admin/stats/recent?limit=N (live logs).
+func (h *Stats) Recent(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	rows, err := h.store.RecentRequests(r.Context(), limit)
+	if err != nil {
+		h.fail(w, "recent", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": rows})
+}
+
+// Cache handles GET /admin/stats/cache (semantic-cache size + recent).
+func (h *Stats) Cache(w http.ResponseWriter, r *http.Request) {
+	cs, err := h.store.CacheStats(r.Context())
+	if err != nil {
+		h.fail(w, "cache", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cs)
 }
 
 // Live handles GET /admin/stats/live (requests/min from Redis).
