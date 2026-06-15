@@ -31,6 +31,17 @@ export type KeyStat = {
   month_cost_usd: number;
   total_cost_usd: number;
 };
+// KeyRecord is the management view from /admin/keys (settings, not usage).
+export type KeyRecord = {
+  id: string;
+  name: string;
+  rate_limit_rpm: number;
+  monthly_budget_usd?: number;
+  cache_enabled: boolean;
+  disabled: boolean;
+  created_at: string;
+};
+
 export type MinuteCount = { timestamp: number; count: number };
 export type Live = { current_per_minute: number; recent: MinuteCount[] };
 
