@@ -41,6 +41,9 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
 - [x] **Phase 6 — Semantic caching:** pgvector + OpenAI embeddings serve near-duplicate
       prompts (`X-Cache: SEMANTIC`), with a calibrated threshold that rejects different-answer
       lookalikes. *(Other stretch items — SSE token accounting, budget alerts, load test — remain.)*
+- [x] **Phase 7 — Control plane:** create/edit/disable/delete virtual keys from the dashboard
+      via token-safe, same-origin write routes (admin token never reaches the browser) + a
+      gateway write-guard; secure-by-default packaging (loopback-only ports). See [docs/security.md](docs/security.md).
 
 ---
 

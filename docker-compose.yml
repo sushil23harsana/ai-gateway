@@ -1,13 +1,19 @@
 # Local infra + gateway. `docker compose up` brings up redis, postgres, runs
 # migrations once, then starts the gateway. Values interpolate from a local
 # .env if present (see .env.example) and fall back to dev-safe defaults.
+#
+# Security: every published port binds to 127.0.0.1 (loopback), so the gateway,
+# dashboard, and datastores are reachable only from this machine — not the LAN.
+# To expose the dashboard/control plane to a team, put it behind a reverse proxy
+# that adds authentication (see docs/security.md). Never publish the admin
+# control plane directly to the public internet.
 
 services:
   redis:
     image: redis:7-alpine
     ports:
-      # Host port is configurable to avoid clashes with a local/other Redis.
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      # Loopback-only. Host port is configurable to avoid clashes with a local/other Redis.
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -22,7 +28,7 @@ services:
       POSTGRES_PASSWORD: gw
       POSTGRES_DB: aigateway
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -46,7 +52,7 @@ services:
   gateway:
     build: .
     ports:
-      - "${PORT:-8080}:8080"
+      - "127.0.0.1:${PORT:-8080}:8080"
     environment:
       PORT: "8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -65,7 +71,7 @@ services:
       FAILOVER_MODEL: ${FAILOVER_MODEL:-}
       # Semantic cache (opt-in)
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
-      SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.05}
+      SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.25}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
     depends_on:
       redis:
@@ -84,7 +90,7 @@ services:
   dashboard:
     build: ./dashboard
     ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
     environment:
       # Server-side only: the dashboard reaches the gateway over the compose
       # network and holds ADMIN_TOKEN so the browser never sees it.

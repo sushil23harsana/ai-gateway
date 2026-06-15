@@ -17,3 +17,4 @@ original `ai-gateway` slug; the product brand is Janus.)
 | 4 | [phase-4.md](phase-4.md) | `Provider` interface + native Anthropic (OpenAI⇄Messages translation) + model routing + 5xx/timeout failover. (Anthropic live check pending key.) |
 | 5 | [phase-5.md](phase-5.md) | `/admin/stats/*` Go API + Redis live counter, and a Next.js 14 + Recharts dashboard that renders it. |
 | 6 | [phase-6.md](phase-6.md) | **Semantic caching** (pgvector + embeddings) — serves near-duplicate prompts, rejects different-answer lookalikes. (Other stretch items: SSE tokens, budget alerts, load test.) |
+| 7 | [phase-7.md](phase-7.md) | **Control plane** — key CRUD from the dashboard (create/edit/disable/delete) via token-safe write routes + write-guard, and secure-by-default self-host packaging. See also [security.md](security.md). |
