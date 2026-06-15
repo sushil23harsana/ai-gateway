@@ -119,6 +119,50 @@ func (s *Store) GetAPIKeyByHash(ctx context.Context, keyHash string) (APIKey, bo
 	return k, true, nil
 }
 
+// KeyUpdate carries optional field changes for UpdateAPIKey. Nil fields are left
+// unchanged. Budget cannot be cleared back to NULL through this path (set a value
+// or leave it nil to keep the current one).
+type KeyUpdate struct {
+	Name             *string
+	RateLimitRPM     *int
+	MonthlyBudgetUSD *float64
+	CacheEnabled     *bool
+	Disabled         *bool
+}
+
+// UpdateAPIKey applies a partial update to a key and returns the new row. found is
+// false (with nil error) when no key has that id.
+func (s *Store) UpdateAPIKey(ctx context.Context, id string, upd KeyUpdate) (APIKey, bool, error) {
+	const q = `
+		UPDATE api_keys SET
+			name               = COALESCE($2, name),
+			rate_limit_rpm     = COALESCE($3, rate_limit_rpm),
+			monthly_budget_usd = COALESCE($4, monthly_budget_usd),
+			cache_enabled      = COALESCE($5, cache_enabled),
+			disabled           = COALESCE($6, disabled)
+		WHERE id = $1::uuid
+		RETURNING id::text, name, rate_limit_rpm, monthly_budget_usd, created_at, disabled, cache_enabled`
+	var k APIKey
+	err := s.pool.QueryRow(ctx, q, id, upd.Name, upd.RateLimitRPM, upd.MonthlyBudgetUSD, upd.CacheEnabled, upd.Disabled).
+		Scan(&k.ID, &k.Name, &k.RateLimitRPM, &k.MonthlyBudgetUSD, &k.CreatedAt, &k.Disabled, &k.CacheEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return APIKey{}, false, nil
+	}
+	if err != nil {
+		return APIKey{}, false, fmt.Errorf("update api_key: %w", err)
+	}
+	return k, true, nil
+}
+
+// DeleteAPIKey removes a key. found is false (with nil error) when no key has that id.
+func (s *Store) DeleteAPIKey(ctx context.Context, id string) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `DELETE FROM api_keys WHERE id = $1::uuid`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete api_key: %w", err)
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
 // ListAPIKeys returns all keys (without the hash) for the admin list endpoint.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	const q = `

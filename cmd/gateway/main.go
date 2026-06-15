@@ -119,10 +119,16 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 
-	// Admin control plane (guarded by ADMIN_TOKEN).
+	// Admin control plane (guarded by ADMIN_TOKEN). Reads need a valid token;
+	// writes additionally require a non-default token via WriteGuard.
 	adminAuth := api.AdminAuth(cfg.AdminToken, logger)
-	mux.Handle("POST /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.Create)))
+	writeGuard := api.WriteGuard(cfg.AdminToken, logger)
+	adminWrite := func(h http.HandlerFunc) http.Handler { return adminAuth(writeGuard(h)) }
+
+	mux.Handle("POST /admin/keys", adminWrite(keyAdmin.Create))
 	mux.Handle("GET /admin/keys", adminAuth(http.HandlerFunc(keyAdmin.List)))
+	mux.Handle("PATCH /admin/keys/{id}", adminWrite(keyAdmin.Update))
+	mux.Handle("DELETE /admin/keys/{id}", adminWrite(keyAdmin.Delete))
 
 	// Dashboard stats endpoints (also guarded by ADMIN_TOKEN).
 	mux.Handle("GET /admin/stats/overview", adminAuth(http.HandlerFunc(statsHandler.Overview)))
