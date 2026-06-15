@@ -14,6 +14,8 @@ project in Go.
 
 > **Author:** Sushil Harsana · **Module:** `github.com/sushil23harsana/ai-gateway`
 > (the Go module path keeps the original `ai-gateway` slug; the product is **Janus**)
+>
+> **Live site:** <https://sushil23harsana.github.io/ai-gateway/>
 
 ---
 
