@@ -63,6 +63,7 @@ services:
       DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
       CACHE_SCOPE: ${CACHE_SCOPE:-key}
+      BUDGET_ENFORCED: ${BUDGET_ENFORCED:-true}
       PRICING_PATH: /app/pricing.yaml
       # Routing & failover
       DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-openai}

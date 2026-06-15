@@ -14,6 +14,12 @@ import (
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
+// SpendAdder records per-key spend (satisfied by *budget.Tracker). Optional; when
+// set, the worker accumulates each billed request's cost for budget enforcement.
+type SpendAdder interface {
+	Add(ctx context.Context, keyID string, costUSD float64)
+}
+
 // Logger is the async request-log writer.
 type Logger struct {
 	store   *store.Store
@@ -21,7 +27,11 @@ type Logger struct {
 	wg      sync.WaitGroup
 	log     *slog.Logger
 	workers int
+	spend   SpendAdder
 }
+
+// SetSpendTracker attaches a spend tracker. Call before Start.
+func (l *Logger) SetSpendTracker(s SpendAdder) { l.spend = s }
 
 // NewLogger constructs a Logger. buffer is the channel depth; workers is the
 // number of draining goroutines. Call Start before Enqueue.
@@ -54,6 +64,10 @@ func (l *Logger) worker() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := l.store.InsertRequestLog(ctx, rl); err != nil {
 			l.log.Error("failed to write request log", "err", err, "provider", rl.Provider, "model", rl.Model)
+		}
+		// Accumulate spend for budget enforcement (best-effort, same async path).
+		if l.spend != nil && rl.APIKeyID != nil && rl.CostUSD > 0 {
+			l.spend.Add(ctx, *rl.APIKeyID, rl.CostUSD)
 		}
 		cancel()
 	}

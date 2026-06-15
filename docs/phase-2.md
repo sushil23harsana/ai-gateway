@@ -88,7 +88,7 @@ and the successful request logged with `api_key_id` joining to the key name.
 - **Token bucket in one Lua script** for atomic refill+take — no read-modify-write race across concurrent requests (BUILD.md §2).
 - **Rate limiter fails open** on Redis errors. Protecting providers matters, but a Redis hiccup shouldn't 500 every request; the error is logged.
 - **Admin token is separate from virtual keys** and compared in constant time; admin API is disabled (503) if `ADMIN_TOKEN` is unset.
-- **`monthly_budget_usd` is stored but not yet enforced** — budget alerts/blocking are a Phase 6 stretch item.
+- **`monthly_budget_usd` is stored here; enforcement landed later** as a Phase 6 stretch item (a Redis spend counter + a 402 budget middleware — see [phase-6.md](phase-6.md)).
 
 ## Deferred to later phases
 

@@ -40,7 +40,7 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
       budgets, live req/min) at `:3000` — renders real traffic.
 - [x] **Phase 6 — Semantic caching:** pgvector + OpenAI embeddings serve near-duplicate
       prompts (`X-Cache: SEMANTIC`), with a calibrated threshold that rejects different-answer
-      lookalikes. *(Other stretch items — SSE token accounting, budget alerts, load test — remain.)*
+      lookalikes. *(Stretch since done: per-key budget enforcement + a k6 cache-hit load test. SSE token accounting still remains.)*
 - [x] **Phase 7 — Control plane:** create/edit/disable/delete virtual keys from the dashboard
       via token-safe, same-origin write routes (admin token never reaches the browser) + a
       gateway write-guard; secure-by-default packaging (loopback-only ports). See [docs/security.md](docs/security.md).
@@ -101,6 +101,25 @@ docker compose up -d redis postgres
 go run ./cmd/migrate     # apply migrations
 go run ./cmd/gateway     # serve on :8080
 ```
+
+> **Deploying beyond your laptop?** See [docs/deploy.md](docs/deploy.md) and read
+> [docs/security.md](docs/security.md) first.
+
+---
+
+## Dashboard
+
+A Next.js console at <http://localhost:3000>: overview tiles (spend, cache
+hit-rate, latency), spend/cost charts, per-provider and per-model breakdowns,
+live requests/min, recent requests, and an **API Keys** page to create, edit,
+disable, and delete virtual keys — with the admin token kept server-side
+(see [docs/security.md](docs/security.md)).
+
+> 📸 **Screenshot:** capture your running dashboard, save it to
+> `docs/assets/dashboard.png`, and add `![Janus dashboard](docs/assets/dashboard.png)`
+> here. It needs your own traffic, so it's a quick step on your machine — see
+> [docs/assets/README.md](docs/assets/README.md). For a visual right now, the
+> [live site](https://sushil23harsana.github.io/ai-gateway/) shows the product.
 
 ---
 

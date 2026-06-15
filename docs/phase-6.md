@@ -98,9 +98,18 @@ for the embedding call + vector search, but far faster (and free) vs a full LLM
 call. The embedding round-trip is also added to every semantic *miss* — the cost
 of the feature, which is why it's opt-in.
 
-## Remaining Phase 6 stretch (not done)
+## Phase 6 stretch — status
 
-- **SSE streaming + mid-stream token accounting** (streaming is OpenAI-passthrough, logs 0 tokens).
-- **Budget enforcement / alerts** on `monthly_budget_usd`.
-- **Load test** (`k6`/`vegeta`) for p99 numbers in the README.
+Done:
+- **Budget enforcement** on `monthly_budget_usd` — `internal/budget`: a Redis
+  per-key monthly spend counter (incremented off the hot path by the async
+  logger) + a middleware that blocks with **HTTP 402** once a key with a budget
+  meets it. Per-key opt-in (only keys with a budget are checked); global
+  kill-switch `BUDGET_ENFORCED`. Unit-tested in `internal/budget/budget_test.go`.
+- **Load test** — a `k6` cache-hit script ([../loadtest/cache-hit.js](../loadtest/cache-hit.js),
+  `make loadtest`) that measures gateway overhead against the §8 < 10 ms bar.
+  Running it for real p99 needs a live stack + a virtual key.
+
+Still open:
+- **SSE mid-stream token accounting** (streaming is OpenAI-passthrough, logs 0 tokens).
 - **Anthropic live checks** (Phase 4) once `ANTHROPIC_API_KEY` is added.

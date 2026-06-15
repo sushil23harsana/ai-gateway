@@ -41,3 +41,6 @@ vet: ## Static checks.
 
 gen-token: ## Print a strong random ADMIN_TOKEN to paste into .env.
 	@openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 32
+
+loadtest: ## Run the k6 cache-hit load test (needs a running gateway + VK=<key>).
+	k6 run loadtest/cache-hit.js

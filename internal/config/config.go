@@ -52,6 +52,10 @@ type Config struct {
 	SemanticThreshold    float64 // max cosine distance for a near-duplicate hit (smaller = stricter)
 	EmbeddingModel       string
 
+	// Budgets — enforce per-key monthly spend caps. A key is only checked when its
+	// monthly_budget_usd is set; this flag is the global kill-switch.
+	BudgetEnforced bool
+
 	// Pricing table (loaded from PricingPath).
 	PricingPath string
 	Pricing     Pricing
@@ -119,8 +123,10 @@ func Load() (*Config, error) {
 		CacheMaxBytes:   getenvInt("CACHE_MAX_BYTES", 1<<20),
 
 		SemanticCacheEnabled: getenvBool("SEMANTIC_CACHE_ENABLED", false),
-		SemanticThreshold:    getenvFloat("SEMANTIC_THRESHOLD", 0.05),
+		SemanticThreshold:    getenvFloat("SEMANTIC_THRESHOLD", 0.25),
 		EmbeddingModel:       getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+
+		BudgetEnforced: getenvBool("BUDGET_ENFORCED", true),
 
 		PricingPath: getenv("PRICING_PATH", "pricing.yaml"),
 	}

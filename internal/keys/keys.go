@@ -39,10 +39,11 @@ func Hash(raw string) string {
 
 // Identity is the authenticated virtual key, carried on the request context.
 type Identity struct {
-	ID           string
-	Name         string
-	RateLimitRPM int
-	CacheEnabled bool
+	ID               string
+	Name             string
+	RateLimitRPM     int
+	MonthlyBudgetUSD float64 // 0 = no budget
+	CacheEnabled     bool
 }
 
 type ctxKey struct{}
@@ -97,7 +98,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "api key disabled")
 			return
 		}
-		ctx := WithIdentity(r.Context(), Identity{ID: rec.ID, Name: rec.Name, RateLimitRPM: rec.RateLimitRPM, CacheEnabled: rec.CacheEnabled})
+		var budget float64
+		if rec.MonthlyBudgetUSD != nil {
+			budget = *rec.MonthlyBudgetUSD
+		}
+		ctx := WithIdentity(r.Context(), Identity{ID: rec.ID, Name: rec.Name, RateLimitRPM: rec.RateLimitRPM, MonthlyBudgetUSD: budget, CacheEnabled: rec.CacheEnabled})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

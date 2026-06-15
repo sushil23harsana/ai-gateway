@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/sushil23harsana/ai-gateway/internal/api"
+	"github.com/sushil23harsana/ai-gateway/internal/budget"
 	"github.com/sushil23harsana/ai-gateway/internal/cache"
 	"github.com/sushil23harsana/ai-gateway/internal/config"
 	"github.com/sushil23harsana/ai-gateway/internal/keys"
@@ -89,8 +90,13 @@ func run() error {
 	pingCancel()
 	defer rdb.Close()
 
+	// Per-key monthly spend tracker (Redis). The async logger accumulates spend
+	// off the hot path; a middleware checks it before each request.
+	budgetTracker := budget.NewTracker(rdb, logger)
+
 	// Async request-log writer (channel + worker pool).
 	mlogger := metrics.NewLogger(st, 1000, 4, logger)
+	mlogger.SetSpendTracker(budgetTracker)
 	mlogger.Start()
 
 	openai := providers.NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey)
@@ -140,11 +146,13 @@ func run() error {
 	mux.Handle("GET /admin/stats/cache", adminAuth(http.HandlerFunc(statsHandler.Cache)))
 	mux.Handle("GET /admin/stats/live", adminAuth(http.HandlerFunc(statsHandler.Live)))
 
-	// Proxy: authenticate the virtual key, rate-limit per key, count for the live
-	// tile, then forward.
+	// Proxy: authenticate the virtual key, enforce the monthly budget, rate-limit
+	// per key, count for the live tile, then forward.
 	rateLimited := ratelimit.Middleware(limiter, logger)
+	budgetGate := budget.Middleware(budgetTracker, cfg.BudgetEnforced, logger)
+	logger.Info("budget enforcement", "enabled", cfg.BudgetEnforced)
 	mux.Handle("POST /v1/chat/completions",
-		authenticator.Middleware(rateLimited(liveCounter.Middleware(http.HandlerFunc(proxyHandler.ChatCompletions)))))
+		authenticator.Middleware(budgetGate(rateLimited(liveCounter.Middleware(http.HandlerFunc(proxyHandler.ChatCompletions))))))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
