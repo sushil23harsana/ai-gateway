@@ -148,7 +148,12 @@ func run() error {
 	statsHandler := api.NewStats(st, liveCounter, logger)
 
 	mux := http.NewServeMux()
+	// Liveness: is the process up? (shallow — never touches dependencies, so a
+	// datastore blip doesn't cause an orchestrator to kill a healthy process.)
 	mux.HandleFunc("GET /healthz", healthz)
+	// Readiness: can we actually serve? Pings Redis + Postgres with a short
+	// deadline; 503 (with which dep failed) when either is unreachable.
+	mux.HandleFunc("GET /readyz", readyz(st, rdb))
 
 	// Admin control plane (guarded by ADMIN_TOKEN). Reads need a valid token;
 	// writes additionally require a non-default token via WriteGuard.
@@ -229,6 +234,37 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// readyz reports whether the gateway can serve traffic: it pings Redis and
+// Postgres with a short deadline and returns 503 if either is unreachable, so a
+// load balancer / orchestrator only routes to a node whose dependencies are up.
+func readyz(st *store.Store, rdb *redis.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		checks := map[string]string{"postgres": "ok", "redis": "ok"}
+		ready := true
+		if err := st.Ping(ctx); err != nil {
+			checks["postgres"] = "error: " + err.Error()
+			ready = false
+		}
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			checks["redis"] = "error: " + err.Error()
+			ready = false
+		}
+
+		status := http.StatusOK
+		state := "ready"
+		if !ready {
+			status = http.StatusServiceUnavailable
+			state = "not ready"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": state, "checks": checks})
+	}
 }
 
 // requestLogger is a minimal access-log middleware. It never blocks the

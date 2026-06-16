@@ -64,6 +64,9 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 // Close releases all pooled connections.
 func (s *Store) Close() { s.pool.Close() }
 
+// Ping verifies database connectivity (used by the readiness probe).
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
 // InsertRequestLog appends one row to request_logs.
 func (s *Store) InsertRequestLog(ctx context.Context, rl RequestLog) error {
 	const q = `
