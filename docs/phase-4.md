@@ -7,7 +7,7 @@ provider, and a forced provider outage fails over cleanly (and is logged).
 
 **Status:** ✅ code-complete & unit-tested; OpenAI path + Anthropic routing
 live-verified. ⏳ **Live verification against the real Anthropic API (and the
-forced-outage failover demo) is pending an `ANTHROPIC_API_KEY`** — see below.
+forced-outage failover demo) is now verified live (2026-06-16)** — see below.
 
 ---
 
@@ -83,13 +83,21 @@ curl -s -X POST localhost:8080/v1/chat/completions -H "Authorization: Bearer $KE
 `claude-haiku-4-5` routes to Anthropic and returns a clean
 `500 "anthropic provider not configured"` (routing + guard correct).
 
-### ⏳ Pending live verification (when `ANTHROPIC_API_KEY` is added)
+### ✅ Live verification (2026-06-16, with a real `ANTHROPIC_API_KEY`)
 
-1. `claude-haiku-4-5` → real Anthropic completion, returned in OpenAI shape, logged with `provider=anthropic` + cost.
-2. **Forced-outage failover:** set `OPENAI_BASE_URL` to a dead address + `FAILOVER_PROVIDER=anthropic` / `FAILOVER_MODEL=claude-haiku-4-5`, send a `gpt-4o-mini` request, confirm failover to Anthropic with two `request_logs` rows, then restore.
+1. **Real Anthropic completion** — `claude-haiku-4-5` returned a 200 in OpenAI
+   shape (`model: claude-haiku-4-5-20251001`, usage 21 in / 9 out), logged with
+   `provider=anthropic` and **cost $0.000066** (21×$0.001/1k + 9×$0.005/1k —
+   exact). A repeat hit the cache (`X-Cache: HIT`, 11 ms, cost 0).
+2. **Forced-outage failover** — with `OPENAI_BASE_URL` pointed at a dead address
+   and `FAILOVER_PROVIDER=anthropic` / `FAILOVER_MODEL=claude-haiku-4-5`, a
+   `gpt-4o-mini` request produced two `request_logs` rows — `openai` `502`
+   (transport error, cost 0) then `anthropic` `200` (cost $0.000076) — and the
+   client got Claude's answer. Gateway logged `"primary provider failed; failing
+   over" primary=openai fallback=anthropic`.
 
-The failover *logic* is already covered by `TestFailoverOnPrimary5xx`; the pending
-step is exercising it against the live Anthropic API.
+This matches the unit-tested logic (`TestFailoverOnPrimary5xx`), now confirmed
+against the live Anthropic API.
 
 ## Key decisions
 

@@ -34,7 +34,7 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
       per-key toggle); hits skip the provider (`cache_hit=true`, cost 0) — verified 1.8s → 4.8ms.
 - [x] **Phase 4 — Multi-provider + routing/failover:** `Provider` interface, native
       Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover.
-      *(OpenAI path + routing live-verified; real-Anthropic + failover demo pending `ANTHROPIC_API_KEY`.)*
+      *(Live-verified 2026-06-16: real Claude completion + correct cost, and forced-outage failover OpenAI→Anthropic.)*
 - [x] **Phase 5 — Next.js dashboard:** `/admin/stats/*` Go API + Redis live counter,
       and a Next.js 14 + Recharts console (overview tiles, spend/cost charts, per-key
       budgets, live req/min) at `:3000` — renders real traffic.
