@@ -23,3 +23,4 @@ original `ai-gateway` slug; the product brand is Janus.)
 
 - [security.md](security.md) — the self-host security model + reverse-proxy recipe.
 - [deploy.md](deploy.md) — running your own instance beyond localhost.
+- [resilience.md](resilience.md) — upstream retry + per-provider circuit breaker.

@@ -37,6 +37,16 @@ type Config struct {
 	FailoverProvider string // fallback provider name on primary 5xx/timeout ("" disables)
 	FailoverModel    string // model to use on the fallback provider
 
+	// Upstream resilience: bounded retry (transient 5xx/429/transport errors) +
+	// a per-provider circuit breaker that fails fast when a provider is down.
+	RetryMaxAttempts    int // total attempts per provider (1 = no retry)
+	RetryBaseDelayMs    int // backoff before the first retry
+	RetryMaxDelayMs     int // backoff cap
+	BreakerEnabled      bool
+	BreakerThreshold    int // consecutive failures that open a breaker
+	BreakerCooldownSecs int // how long a breaker stays open before a trial
+	BreakerHalfOpenMax  int // trial requests allowed while half-open
+
 	// Infra
 	RedisURL    string
 	DatabaseURL string
@@ -115,6 +125,13 @@ func Load() (*Config, error) {
 		FailoverEnabled:        getenvBool("FAILOVER_ENABLED", true),
 		FailoverProvider:       os.Getenv("FAILOVER_PROVIDER"),
 		FailoverModel:          os.Getenv("FAILOVER_MODEL"),
+		RetryMaxAttempts:       getenvInt("RETRY_MAX_ATTEMPTS", 3),
+		RetryBaseDelayMs:       getenvInt("RETRY_BASE_DELAY_MS", 200),
+		RetryMaxDelayMs:        getenvInt("RETRY_MAX_DELAY_MS", 2000),
+		BreakerEnabled:         getenvBool("BREAKER_ENABLED", true),
+		BreakerThreshold:       getenvInt("BREAKER_THRESHOLD", 5),
+		BreakerCooldownSecs:    getenvInt("BREAKER_COOLDOWN_SECONDS", 30),
+		BreakerHalfOpenMax:     getenvInt("BREAKER_HALFOPEN_MAX", 1),
 		RedisURL:        getenv("REDIS_URL", "redis://localhost:6379"),
 		DatabaseURL:     getenv("DATABASE_URL", "postgres://gw:gw@localhost:5432/aigateway?sslmode=disable"),
 		CacheTTLSeconds: getenvInt("CACHE_TTL_SECONDS", 3600),

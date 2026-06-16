@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sushil23harsana/ai-gateway/internal/cache"
 	"github.com/sushil23harsana/ai-gateway/internal/config"
 	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
+	"github.com/sushil23harsana/ai-gateway/internal/resilience"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
@@ -73,7 +76,7 @@ func testPricing() config.Pricing {
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func newTestHandler(client *http.Client, baseURL string, sink LogSink, c ResponseCache) *Handler {
-	return NewHandler(client, oneProviderRouter(baseURL), testPricing(), sink, c, disabledSemantic(), FailoverConfig{}, discardLogger())
+	return NewHandler(client, oneProviderRouter(baseURL), testPricing(), sink, c, disabledSemantic(), FailoverConfig{}, nil, discardLogger())
 }
 
 func disabledCache() *fakeCache { return &fakeCache{enabled: false} }
@@ -205,7 +208,7 @@ func TestFailoverOnPrimary5xx(t *testing.T) {
 	router := providers.NewRouter([]providers.Provider{oa, an}, testPricing().ProviderMap(), "openai")
 	sink := &fakeSink{}
 	h := NewHandler(&http.Client{}, router, testPricing(), sink, disabledCache(), disabledSemantic(),
-		FailoverConfig{Enabled: true, Provider: "anthropic", Model: "claude-haiku-4-5"}, discardLogger())
+		FailoverConfig{Enabled: true, Provider: "anthropic", Model: "claude-haiku-4-5"}, nil, discardLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`))
@@ -247,7 +250,7 @@ func TestSemanticHitSkipsUpstream(t *testing.T) {
 		Status: 200, ContentType: "application/json",
 		Body: `{"semantic":true}`, Model: "gpt-4o-mini", TokensIn: 4, TokensOut: 6,
 	}}
-	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, discardLogger())
+	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, nil, discardLogger())
 
 	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi there"}]}`)))
@@ -278,7 +281,7 @@ func TestSemanticMissStoresAfterProvider(t *testing.T) {
 
 	sink := &fakeSink{}
 	sem := &fakeSemantic{enabled: true, hit: false}
-	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, discardLogger())
+	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink, disabledCache(), sem, FailoverConfig{}, nil, discardLogger())
 
 	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi there"}]}`)))
@@ -320,11 +323,52 @@ func TestChatCompletionsLogsUpstreamErrorBody(t *testing.T) {
 	}
 }
 
+func TestRetryRecoversTransientFailure(t *testing.T) {
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First attempt 500s (transient); the retry succeeds.
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"transient"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"gpt-4o-mini","usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	sink := &fakeSink{}
+	policy := resilience.NewPolicy(
+		resilience.RetryConfig{MaxAttempts: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		resilience.BreakerConfig{Enabled: false},
+		discardLogger(),
+	)
+	h := NewHandler(upstream.Client(), oneProviderRouter(upstream.URL), testPricing(), sink,
+		disabledCache(), disabledSemantic(), FailoverConfig{}, policy, discardLogger())
+
+	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`)))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (retry should recover); body=%s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Errorf("upstream calls = %d, want >= 2 (one failure + retry)", got)
+	}
+	// Only the final, successful attempt is logged for the client request.
+	if len(sink.logs) != 1 || sink.logs[0].Status != 200 {
+		t.Fatalf("expected a single success log after retry, got %+v", sink.logs)
+	}
+}
+
 func TestChatCompletionsMissingKeyReturns500(t *testing.T) {
 	sink := &fakeSink{}
 	oa := providers.NewOpenAI("http://unused", "") // no key
 	router := providers.NewRouter([]providers.Provider{oa}, testPricing().ProviderMap(), "openai")
-	h := NewHandler(http.DefaultClient, router, testPricing(), sink, disabledCache(), disabledSemantic(), FailoverConfig{}, discardLogger())
+	h := NewHandler(http.DefaultClient, router, testPricing(), sink, disabledCache(), disabledSemantic(), FailoverConfig{}, nil, discardLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini"}`))
 	rec := httptest.NewRecorder()

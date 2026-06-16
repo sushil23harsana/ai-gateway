@@ -9,6 +9,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/sushil23harsana/ai-gateway/internal/config"
 	"github.com/sushil23harsana/ai-gateway/internal/keys"
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
+	"github.com/sushil23harsana/ai-gateway/internal/resilience"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
@@ -70,12 +72,17 @@ type Handler struct {
 	cache    ResponseCache
 	semantic SemanticCache
 	failover FailoverConfig
+	resil    *resilience.Policy
 	log      *slog.Logger
 }
 
-// NewHandler wires the proxy dependencies.
-func NewHandler(client *http.Client, router Router, pricing config.Pricing, sink LogSink, c ResponseCache, semantic SemanticCache, failover FailoverConfig, log *slog.Logger) *Handler {
-	return &Handler{client: client, router: router, pricing: pricing, sink: sink, cache: c, semantic: semantic, failover: failover, log: log}
+// NewHandler wires the proxy dependencies. A nil resil policy means no retry and
+// no circuit breaking (each upstream call is attempted exactly once).
+func NewHandler(client *http.Client, router Router, pricing config.Pricing, sink LogSink, c ResponseCache, semantic SemanticCache, failover FailoverConfig, resil *resilience.Policy, log *slog.Logger) *Handler {
+	if resil == nil {
+		resil = resilience.Disabled()
+	}
+	return &Handler{client: client, router: router, pricing: pricing, sink: sink, cache: c, semantic: semantic, failover: failover, resil: resil, log: log}
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -152,12 +159,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Primary attempt.
+	// Primary attempt (retried on transient failures; short-circuited if the
+	// provider's breaker is open).
 	used := primary
 	sentModel := meta.Model
-	status, raw, terr := h.doUpstream(r.Context(), primary, body)
+	status, raw, terr := h.resil.Do(r.Context(), primary.Name(), func(ctx context.Context) (int, []byte, error) {
+		return h.doUpstream(ctx, primary, body)
+	})
 
-	// Failover on transport error or 5xx.
+	// Failover on transport error, an open breaker, or a 5xx.
 	if (terr != nil || status >= 500) && h.failover.Enabled && h.failover.Provider != "" && h.failover.Provider != primary.Name() {
 		if fb, ok := h.router.ByName(h.failover.Provider); ok && fb.APIKey() != "" {
 			h.enqueueFailure(apiKeyID, primary.Name(), meta.Model, status, terr, raw, start)
@@ -170,12 +180,19 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			used = fb
 			sentModel = fbModel
-			status, raw, terr = h.doUpstream(r.Context(), fb, rewriteModel(body, fbModel))
+			fbBody := rewriteModel(body, fbModel)
+			status, raw, terr = h.resil.Do(r.Context(), fb.Name(), func(ctx context.Context) (int, []byte, error) {
+				return h.doUpstream(ctx, fb, fbBody)
+			})
 		}
 	}
 
 	if terr != nil {
-		h.fail(w, start, apiKeyID, used.Name(), sentModel, http.StatusBadGateway, terr)
+		failStatus := http.StatusBadGateway
+		if errors.Is(terr, resilience.ErrCircuitOpen) {
+			failStatus = http.StatusServiceUnavailable
+		}
+		h.fail(w, start, apiKeyID, used.Name(), sentModel, failStatus, terr)
 		return
 	}
 
@@ -336,6 +353,9 @@ func (h *Handler) enqueueFailure(apiKeyID *string, provider, model string, statu
 	logStatus := status
 	if logStatus == 0 {
 		logStatus = http.StatusBadGateway
+		if errors.Is(terr, resilience.ErrCircuitOpen) {
+			logStatus = http.StatusServiceUnavailable
+		}
 	}
 	var msg string
 	if terr != nil {

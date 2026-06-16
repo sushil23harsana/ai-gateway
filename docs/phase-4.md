@@ -106,6 +106,17 @@ against the live Anthropic API.
 - **Failover only on 5xx/timeout**, not 4xx; cross-provider with a configured fallback model; both attempts logged.
 - **Interface expanded beyond BUILD.md's sketch** (`Translate`/`ParseUsage`/`Endpoint`) to also own response translation + auth, since real failover needs a consistent response shape regardless of which provider served it.
 
+## Upstream resilience (added 2026-06-16)
+
+Failover is now fronted by a retry + circuit-breaker layer
+([internal/resilience/](../internal/resilience/), see [resilience.md](resilience.md)):
+each provider call is retried on transient failures (transport/5xx/429) with
+exponential backoff + jitter, and a **per-provider circuit breaker** opens after
+repeated failures so a dead provider fails fast (and over) instead of every
+request eating the full timeout. Order is retry → breaker → failover. Verified
+live: open → half-open → re-open cycle with OpenAI down, client served by Claude
+throughout.
+
 ## Deferred to later phases
 
 - **Dashboard** (`/admin/stats/*`) → Phase 5.

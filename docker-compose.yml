@@ -59,6 +59,9 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Override to point at a compatible endpoint (e.g. Azure OpenAI, a proxy).
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
@@ -70,6 +73,14 @@ services:
       FAILOVER_ENABLED: ${FAILOVER_ENABLED:-true}
       FAILOVER_PROVIDER: ${FAILOVER_PROVIDER:-}
       FAILOVER_MODEL: ${FAILOVER_MODEL:-}
+      # Upstream resilience (retry + per-provider circuit breaker)
+      RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+      RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-200}
+      RETRY_MAX_DELAY_MS: ${RETRY_MAX_DELAY_MS:-2000}
+      BREAKER_ENABLED: ${BREAKER_ENABLED:-true}
+      BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-5}
+      BREAKER_COOLDOWN_SECONDS: ${BREAKER_COOLDOWN_SECONDS:-30}
+      BREAKER_HALFOPEN_MAX: ${BREAKER_HALFOPEN_MAX:-1}
       # Semantic cache (opt-in)
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
       SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.25}

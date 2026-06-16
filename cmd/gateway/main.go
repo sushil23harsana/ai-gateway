@@ -29,6 +29,7 @@ import (
 	"github.com/sushil23harsana/ai-gateway/internal/providers"
 	"github.com/sushil23harsana/ai-gateway/internal/proxy"
 	"github.com/sushil23harsana/ai-gateway/internal/ratelimit"
+	"github.com/sushil23harsana/ai-gateway/internal/resilience"
 	"github.com/sushil23harsana/ai-gateway/internal/store"
 )
 
@@ -114,7 +115,31 @@ func run() error {
 	failover := proxy.FailoverConfig{Enabled: cfg.FailoverEnabled, Provider: cfg.FailoverProvider, Model: cfg.FailoverModel}
 	logger.Info("routing", "default_provider", cfg.DefaultProvider, "failover_enabled", failover.Enabled, "failover_provider", failover.Provider, "failover_model", failover.Model)
 
-	proxyHandler := proxy.NewHandler(upstream, router, cfg.Pricing, mlogger, respCache, semantic, failover, logger)
+	// Upstream resilience: retry transient failures, then trip a per-provider
+	// circuit breaker so a persistently-down provider fails fast (and over).
+	resil := resilience.NewPolicy(
+		resilience.RetryConfig{
+			MaxAttempts: cfg.RetryMaxAttempts,
+			BaseDelay:   time.Duration(cfg.RetryBaseDelayMs) * time.Millisecond,
+			MaxDelay:    time.Duration(cfg.RetryMaxDelayMs) * time.Millisecond,
+		},
+		resilience.BreakerConfig{
+			Enabled:     cfg.BreakerEnabled,
+			Threshold:   cfg.BreakerThreshold,
+			Cooldown:    time.Duration(cfg.BreakerCooldownSecs) * time.Second,
+			HalfOpenMax: cfg.BreakerHalfOpenMax,
+		},
+		logger,
+	)
+	logger.Info("upstream resilience",
+		"retry_max_attempts", cfg.RetryMaxAttempts,
+		"retry_base_delay_ms", cfg.RetryBaseDelayMs,
+		"breaker_enabled", cfg.BreakerEnabled,
+		"breaker_threshold", cfg.BreakerThreshold,
+		"breaker_cooldown_seconds", cfg.BreakerCooldownSecs,
+	)
+
+	proxyHandler := proxy.NewHandler(upstream, router, cfg.Pricing, mlogger, respCache, semantic, failover, resil, logger)
 
 	authenticator := keys.NewAuthenticator(st, logger)
 	limiter := ratelimit.NewLimiter(rdb)

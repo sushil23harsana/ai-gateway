@@ -33,8 +33,11 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
 - [x] **Phase 3 — Response caching:** Redis exact-match cache (per-key scope, TTL,
       per-key toggle); hits skip the provider (`cache_hit=true`, cost 0) — verified 1.8s → 4.8ms.
 - [x] **Phase 4 — Multi-provider + routing/failover:** `Provider` interface, native
-      Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover.
-      *(Live-verified 2026-06-16: real Claude completion + correct cost, and forced-outage failover OpenAI→Anthropic.)*
+      Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover,
+      plus **upstream resilience** — bounded retry with backoff + a per-provider
+      circuit breaker (see [docs/resilience.md](docs/resilience.md)).
+      *(Live-verified 2026-06-16: real Claude completion + correct cost, forced-outage
+      failover OpenAI→Anthropic, and the full breaker open→half-open→re-open cycle.)*
 - [x] **Phase 5 — Next.js dashboard:** `/admin/stats/*` Go API + Redis live counter,
       and a Next.js 14 + Recharts console (overview tiles, spend/cost charts, per-key
       budgets, live req/min) at `:3000` — renders real traffic.
