@@ -75,12 +75,33 @@ buffered channel + worker pool (Phase 1), never inline on the response.
 
 ## Quickstart
 
+### Run from pre-built images (just Docker — no clone, no build)
+
+Images are published to GHCR on every push to `main`. Grab the prod compose
+file and an env template, then bring it up:
+
 ```bash
+curl -O https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/.env.example
+# edit .env — add OPENAI_API_KEY and/or ANTHROPIC_API_KEY, set ADMIN_TOKEN
+
+docker compose -f docker-compose.prod.yml up -d
+```
+
+This pulls `ghcr.io/sushil23harsana/ai-gateway` (+ the dashboard image), runs DB
+migrations once, and starts everything. Pin a version with
+`GATEWAY_IMAGE=ghcr.io/sushil23harsana/ai-gateway:vX.Y.Z`; the default tracks
+`latest`.
+
+### Build from source (developers)
+
+```bash
+git clone https://github.com/sushil23harsana/ai-gateway.git && cd ai-gateway
 cp .env.example .env        # then fill in provider keys as you reach Phase 1+
 docker compose up -d --build
 ```
 
-This starts Redis, Postgres, the gateway, and the dashboard (and runs DB
+Either path starts Redis, Postgres, the gateway, and the dashboard (and runs DB
 migrations once). Verify the health endpoint:
 
 ```bash

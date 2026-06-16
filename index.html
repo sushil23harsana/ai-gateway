@@ -348,28 +348,53 @@
 <section id="quickstart">
   <div class="container">
     <h2>Quickstart</h2>
-    <p class="section-sub">Up and running in under two minutes with Docker Compose.</p>
+    <p class="section-sub">Up and running in under two minutes. Pick the path that fits — pre-built images need only Docker, no source code.</p>
 
-    <div class="code-wrap">
-      <div class="code-header">
-        <span class="lang">shell</span>
-        <button class="copy-btn" onclick="copyCode(this)">copy</button>
+    <div class="tabs" id="tabs-install">
+      <button class="tab-btn active" onclick="switchTab('install','image')">Pre-built images (just Docker)</button>
+      <button class="tab-btn" onclick="switchTab('install','source')">Build from source</button>
+    </div>
+
+    <div id="install-image" class="tab-panel active">
+      <div class="code-wrap">
+        <div class="code-header">
+          <span class="lang">shell — recommended</span>
+          <button class="copy-btn" onclick="copyCode(this)">copy</button>
+        </div>
+        <pre><span class="c-comment"># 1. Grab the compose file + env template (no git clone needed)</span>
+curl -O https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/.env.example
+<span class="c-comment"># Edit .env — add your OPENAI_API_KEY and/or ANTHROPIC_API_KEY</span>
+
+<span class="c-comment"># 2. Pull the pre-built images and start (gateway :8080, dashboard :3000)</span>
+docker compose -f docker-compose.prod.yml up -d
+
+<span class="c-comment"># 3. Check health</span>
+curl http://localhost:8080/healthz
+<span class="c-comment"># → {"status":"ok"}</span></pre>
       </div>
-      <pre><span class="c-comment"># 1. Clone and configure</span>
+      <p style="font-size:0.85rem; color:var(--muted)">Images are published to <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">ghcr.io/sushil23harsana/ai-gateway</code>. Pin a version with <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">GATEWAY_IMAGE=...:v1.0.0</code>; the default tracks <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">latest</code>.</p>
+    </div>
+
+    <div id="install-source" class="tab-panel">
+      <div class="code-wrap">
+        <div class="code-header">
+          <span class="lang">shell — for developers</span>
+          <button class="copy-btn" onclick="copyCode(this)">copy</button>
+        </div>
+        <pre><span class="c-comment"># 1. Clone and configure</span>
 git clone https://github.com/sushil23harsana/ai-gateway.git
 cd ai-gateway
 cp .env.example .env
 <span class="c-comment"># Edit .env — add your OPENAI_API_KEY and/or ANTHROPIC_API_KEY</span>
 
-<span class="c-comment"># 2. Start the full stack (gateway :8080, dashboard :3000)</span>
+<span class="c-comment"># 2. Build locally and start the full stack</span>
 docker compose up -d --build
 
 <span class="c-comment"># 3. Check health</span>
 curl http://localhost:8080/healthz
-<span class="c-comment"># → {"status":"ok"}</span>
-
-curl http://localhost:8080/readyz
-<span class="c-comment"># → {"status":"ready","checks":{"postgres":"ok","redis":"ok"}}</span></pre>
+<span class="c-comment"># → {"status":"ok"}</span></pre>
+      </div>
     </div>
 
     <p>Then open the dashboard at <a href="http://localhost:3000" target="_blank">http://localhost:3000</a>.</p>

@@ -1,0 +1,113 @@
+# Run Janus from pre-built images — no source checkout, no local build.
+#
+#   curl -O https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/docker-compose.prod.yml
+#   curl -O https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/.env.example
+#   mv .env.example .env        # then fill in your provider key(s) + ADMIN_TOKEN
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# This pulls redis, postgres, the gateway, and the dashboard, runs DB migrations
+# once, then starts everything. Pin a version by exporting GATEWAY_IMAGE /
+# DASHBOARD_IMAGE (e.g. ...:v1.2.0); the defaults track `latest` on main.
+#
+# Security: every published port binds to 127.0.0.1 (loopback) — reachable only
+# from this machine, not the LAN. To expose the control plane to a team, put it
+# behind an authenticating reverse proxy (see docs/security.md).
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: gw
+      POSTGRES_PASSWORD: gw
+      POSTGRES_DB: aigateway
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gw -d aigateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: applies pending migrations using the gateway image, then exits 0.
+  migrate:
+    image: ${GATEWAY_IMAGE:-ghcr.io/sushil23harsana/ai-gateway:latest}
+    entrypoint: ["/app/migrate"]
+    environment:
+      DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    image: ${GATEWAY_IMAGE:-ghcr.io/sushil23harsana/ai-gateway:latest}
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://gw:gw@postgres:5432/aigateway?sslmode=disable
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
+      CACHE_SCOPE: ${CACHE_SCOPE:-key}
+      BUDGET_ENFORCED: ${BUDGET_ENFORCED:-true}
+      PRICING_PATH: /app/pricing.yaml
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-openai}
+      FAILOVER_ENABLED: ${FAILOVER_ENABLED:-true}
+      FAILOVER_PROVIDER: ${FAILOVER_PROVIDER:-}
+      FAILOVER_MODEL: ${FAILOVER_MODEL:-}
+      RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+      RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-200}
+      RETRY_MAX_DELAY_MS: ${RETRY_MAX_DELAY_MS:-2000}
+      BREAKER_ENABLED: ${BREAKER_ENABLED:-true}
+      BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-5}
+      BREAKER_COOLDOWN_SECONDS: ${BREAKER_COOLDOWN_SECONDS:-30}
+      BREAKER_HALFOPEN_MAX: ${BREAKER_HALFOPEN_MAX:-1}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.25}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  dashboard:
+    image: ${DASHBOARD_IMAGE:-ghcr.io/sushil23harsana/ai-gateway-dashboard:latest}
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  pgdata:
