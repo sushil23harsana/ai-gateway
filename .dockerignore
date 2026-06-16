@@ -1,0 +1,28 @@
+# Node / dashboard
+dashboard/node_modules
+dashboard/.next
+dashboard/.pnp
+dashboard/.pnp.js
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+bin/
+
+# Git
+.git
+.gitignore
+
+# Docs / landing page
+docs/assets
+*.html
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+*.tsbuildinfo
