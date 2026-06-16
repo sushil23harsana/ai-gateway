@@ -364,6 +364,85 @@ func TestRetryRecoversTransientFailure(t *testing.T) {
 	}
 }
 
+// streamingUpstream returns an SSE server that asserts include_usage was
+// injected, then emits two content chunks and a final usage chunk.
+func streamingUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"include_usage":true`) {
+			t.Errorf("gateway did not inject include_usage; upstream body=%s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `data: {"model":"gpt-4o-mini-2024-07-18","choices":[{"delta":{"content":"Hel"}}]}`+"\n\n")
+		io.WriteString(w, `data: {"model":"gpt-4o-mini-2024-07-18","choices":[{"delta":{"content":"lo"}}]}`+"\n\n")
+		io.WriteString(w, `data: {"model":"gpt-4o-mini-2024-07-18","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":22}}`+"\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+}
+
+func TestStreamingAccountsUsageAndSwallowsUsageChunk(t *testing.T) {
+	upstream := streamingUpstream(t)
+	defer upstream.Close()
+
+	sink := &fakeSink{}
+	h := newTestHandler(upstream.Client(), upstream.URL, sink, disabledCache())
+
+	// Client did NOT request usage.
+	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, "Hel") || !strings.Contains(out, "lo") {
+		t.Errorf("content chunks not forwarded: %q", out)
+	}
+	if !strings.Contains(out, "[DONE]") {
+		t.Errorf("DONE sentinel not forwarded: %q", out)
+	}
+	// The usage chunk must be swallowed since the client didn't ask for it.
+	if strings.Contains(out, "prompt_tokens") {
+		t.Errorf("usage chunk leaked to a client that didn't request it: %q", out)
+	}
+	// But it must still be logged with real tokens + non-zero cost.
+	if len(sink.logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", len(sink.logs))
+	}
+	got := sink.logs[0]
+	if got.TokensIn != 11 || got.TokensOut != 22 {
+		t.Errorf("logged tokens = %d/%d, want 11/22", got.TokensIn, got.TokensOut)
+	}
+	if got.Model != "gpt-4o-mini-2024-07-18" {
+		t.Errorf("logged model = %q, want the resolved model from the stream", got.Model)
+	}
+	if got.CostUSD <= 0 {
+		t.Errorf("streamed request cost = %v, want > 0", got.CostUSD)
+	}
+}
+
+func TestStreamingForwardsUsageWhenClientAsks(t *testing.T) {
+	upstream := streamingUpstream(t)
+	defer upstream.Close()
+
+	sink := &fakeSink{}
+	h := newTestHandler(upstream.Client(), upstream.URL, sink, disabledCache())
+
+	// Client explicitly requested the usage chunk.
+	req := withKey(httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o-mini","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`)))
+	rec := httptest.NewRecorder()
+	h.ChatCompletions(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "prompt_tokens") {
+		t.Errorf("usage chunk should be forwarded when the client asked for it: %q", rec.Body.String())
+	}
+	if len(sink.logs) != 1 || sink.logs[0].TokensIn != 11 || sink.logs[0].TokensOut != 22 {
+		t.Fatalf("expected usage still logged 11/22, got %+v", sink.logs)
+	}
+}
+
 func TestChatCompletionsMissingKeyReturns500(t *testing.T) {
 	sink := &fakeSink{}
 	oa := providers.NewOpenAI("http://unused", "") // no key

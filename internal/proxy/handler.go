@@ -7,6 +7,8 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -282,8 +284,15 @@ func (h *Handler) doUpstream(ctx context.Context, p providers.Provider, body []b
 }
 
 // stream does an OpenAI-style streaming passthrough (no failover, no caching).
+//
+// To account for tokens/cost on streamed requests, it asks the upstream to emit
+// a final usage chunk (stream_options.include_usage) and parses it as the SSE
+// flows through. The usage chunk is forwarded to the client only if the client
+// itself asked for it; otherwise it is swallowed so the client sees exactly the
+// stream it expects. Content chunks are forwarded verbatim.
 func (h *Handler) stream(w http.ResponseWriter, r *http.Request, p providers.Provider, body []byte, apiKeyID *string, model string, start time.Time) {
-	req, err := p.BuildUpstreamRequest(r.Context(), body)
+	clientWantsUsage := requestWantsUsage(body)
+	req, err := p.BuildUpstreamRequest(r.Context(), ensureIncludeUsage(body))
 	if err != nil {
 		h.fail(w, start, apiKeyID, p.Name(), model, http.StatusInternalServerError, err)
 		return
@@ -298,11 +307,46 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, p providers.Pro
 	w.Header().Set("Content-Type", contentTypeOr(resp, "text/event-stream"))
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 4096)
+
+	// A non-2xx upstream isn't an SSE stream: relay the body and log the error.
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		_, _ = w.Write(raw)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		errMsg := truncate(string(raw), maxErrorBytes)
+		h.sink.Enqueue(store.RequestLog{
+			APIKeyID: apiKeyID, Provider: p.Name(), Model: model,
+			Status: resp.StatusCode, LatencyMs: int(time.Since(start).Milliseconds()), Error: &errMsg,
+		})
+		return
+	}
+
+	var tokensIn, tokensOut int
+	resolvedModel := model
+	reader := bufio.NewReader(resp.Body)
 	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
+		line, rerr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			// Inspect data lines for the resolved model and the usage chunk.
+			if payload, ok := sseData(line); ok {
+				m, in, out, isUsage := parseStreamChunk(payload)
+				if m != "" {
+					resolvedModel = m
+				}
+				if isUsage {
+					tokensIn, tokensOut = in, out
+					if !clientWantsUsage {
+						// Swallow the usage chunk the client never asked for.
+						if rerr != nil {
+							break
+						}
+						continue
+					}
+				}
+			}
+			if _, werr := w.Write(line); werr != nil {
 				break
 			}
 			if flusher != nil {
@@ -314,13 +358,86 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request, p providers.Pro
 		}
 	}
 
+	cost, priced := h.pricing.Cost(resolvedModel, tokensIn, tokensOut)
+	if !priced && resolvedModel != model {
+		cost, _ = h.pricing.Cost(model, tokensIn, tokensOut)
+	}
 	h.sink.Enqueue(store.RequestLog{
 		APIKeyID:  apiKeyID,
 		Provider:  p.Name(),
-		Model:     model,
+		Model:     resolvedModel,
 		Status:    resp.StatusCode,
+		TokensIn:  tokensIn,
+		TokensOut: tokensOut,
+		CostUSD:   cost,
 		LatencyMs: int(time.Since(start).Milliseconds()),
 	})
+}
+
+// requestWantsUsage reports whether the client asked for a usage chunk
+// (stream_options.include_usage=true).
+func requestWantsUsage(body []byte) bool {
+	var m struct {
+		StreamOptions *struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	_ = json.Unmarshal(body, &m)
+	return m.StreamOptions != nil && m.StreamOptions.IncludeUsage
+}
+
+// ensureIncludeUsage returns body with stream_options.include_usage set to true
+// so the upstream emits a final usage chunk we can account for.
+func ensureIncludeUsage(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	so, _ := m["stream_options"].(map[string]any)
+	if so == nil {
+		so = map[string]any{}
+	}
+	so["include_usage"] = true
+	m["stream_options"] = so
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// sseData returns the JSON payload of an SSE "data: {...}" line. It returns
+// false for blank lines, comments, and sentinels like "data: [DONE]".
+func sseData(line []byte) ([]byte, bool) {
+	s := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(s, []byte("data:")) {
+		return nil, false
+	}
+	payload := bytes.TrimSpace(s[len("data:"):])
+	if len(payload) == 0 || payload[0] != '{' {
+		return nil, false
+	}
+	return payload, true
+}
+
+// parseStreamChunk extracts the model and, if present, the usage from one
+// streamed chat-completion chunk. isUsage is true for the final usage-only chunk
+// (the one OpenAI emits when include_usage is set).
+func parseStreamChunk(payload []byte) (model string, tokensIn, tokensOut int, isUsage bool) {
+	var c struct {
+		Model string `json:"model"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return "", 0, 0, false
+	}
+	if c.Usage != nil {
+		return c.Model, c.Usage.PromptTokens, c.Usage.CompletionTokens, true
+	}
+	return c.Model, 0, 0, false
 }
 
 // serveCached returns a cached response and logs a cache hit (cost 0). xcache is
