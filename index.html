@@ -210,6 +210,7 @@
   </div>
   <div class="nav-links">
     <a href="#quickstart">Quickstart</a>
+    <a href="#models">Models</a>
     <a href="#usage">Usage</a>
     <a href="#langchain">LangChain</a>
     <a href="#config">Config</a>
@@ -276,7 +277,7 @@
       <div class="feat">
         <div class="feat-icon">💰</div>
         <h3>Monthly budgets</h3>
-        <p>Per-key spend caps enforced at the gateway. 429 when the limit is reached.</p>
+        <p>Per-key spend caps enforced at the gateway. 402 when the limit is reached.</p>
       </div>
       <div class="feat">
         <div class="feat-icon">📊</div>
@@ -309,7 +310,7 @@
         <div class="step-num">2</div>
         <div class="step-body">
           <h4>Budget gate</h4>
-          <p>Current month's spend (tracked in Redis) is compared to the key's <code>monthly_budget_usd</code>. Over budget → 429.</p>
+          <p>Current month's spend (tracked in Redis) is compared to the key's <code>monthly_budget_usd</code>. Over budget → 402.</p>
         </div>
       </div>
       <div class="step">
@@ -406,6 +407,35 @@ curl http://localhost:8080/healthz
       <code>&nbsp;&nbsp;-H "Content-Type: application/json" \</code><br>
       <code>&nbsp;&nbsp;-d '{"name":"my-app","rpm_limit":60,"monthly_budget_usd":10}'</code><br><br>
       The response includes the raw key — save it, it is shown only once.
+    </div>
+  </div>
+</section>
+
+<!-- ── Supported models ── -->
+<section id="models">
+  <div class="container">
+    <h2>Supported models</h2>
+    <p class="section-sub">Pass any of these as the <code>model</code> field — Janus routes to the right provider automatically. Prices below match <code>pricing.yaml</code> (edit it to add models without a rebuild).</p>
+
+    <table class="cfg-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Provider</th>
+          <th>Price — input / output (per 1M tokens)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>gpt-4o-mini</code></td><td>OpenAI</td><td>$0.15 / $0.60 &nbsp;<span style="color:var(--green)">· cheapest, ideal for testing</span></td></tr>
+        <tr><td><code>gpt-4o</code></td><td>OpenAI</td><td>$2.50 / $10.00</td></tr>
+        <tr><td><code>claude-haiku-4-5</code></td><td>Anthropic</td><td>$1.00 / $5.00 &nbsp;<span style="color:var(--green)">· cheapest Anthropic</span></td></tr>
+        <tr><td><code>claude-sonnet-4-6</code></td><td>Anthropic</td><td>$3.00 / $15.00</td></tr>
+        <tr><td><code>claude-opus-4-8</code></td><td>Anthropic</td><td>$5.00 / $25.00 &nbsp;<span style="color:var(--muted)">· most capable</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout" style="margin-top:1.5rem">
+      <strong>Testing on a tight budget?</strong> Use <code>gpt-4o-mini</code>. A typical test prompt is ~100 tokens, so ~1,000 calls costs roughly <strong>1.5¢</strong>. Set a <code>monthly_budget_usd</code> on your virtual key so you can never overspend — the gateway returns HTTP 402 once a key hits its cap.
     </div>
   </div>
 </section>
