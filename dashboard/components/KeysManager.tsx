@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { num, usd } from "@/lib/format";
 import Badge from "./Badge";
@@ -104,6 +105,8 @@ const overlay: React.CSSProperties = {
 const modalCard: React.CSSProperties = {
   width: "100%",
   maxWidth: 440,
+  maxHeight: "calc(100vh - 40px)",
+  overflowY: "auto",
   background: "var(--surface-1)",
   border: "1px solid var(--border-strong)",
   borderRadius: "var(--radius-lg)",
@@ -111,8 +114,15 @@ const modalCard: React.CSSProperties = {
   padding: 24,
 };
 
+// Rendered through a portal to document.body: an ancestor card uses a CSS
+// transform (the `reveal` animation), which would otherwise make this fixed
+// overlay resolve against that card — clipping it inside the card's bounds.
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return (
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
+  return createPortal(
     <div style={overlay} onClick={onClose}>
       <div style={modalCard} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
@@ -123,7 +133,8 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
