@@ -4,49 +4,48 @@
 > gateway between two providers.*
 
 **Janus** is a self-hostable **LLM gateway / proxy** that sits between your
-applications and LLM providers (OpenAI, Anthropic) and gives teams the control
-plane they're missing: **cost & token analytics, exact + semantic caching, rate
-limiting, virtual API keys, and multi-provider routing/failover** — all behind a
+applications and LLM providers (OpenAI, Anthropic). It's a drop-in replacement
+for the OpenAI API that adds the control plane teams are missing: **virtual API
+keys, rate limiting, exact + semantic caching, cost & token analytics, monthly
+budgets, and multi-provider routing with retry/failover** — all behind a
 real-time dashboard.
 
-Think *Helicone / LiteLLM, built from scratch* — a production-shaped systems
-project in Go.
+Point any OpenAI-compatible client (the OpenAI SDK, LangChain, LlamaIndex, …) at
+Janus instead of `api.openai.com`, and you get cost tracking, caching, and key
+management for free — without changing your app code.
 
-> **Author:** Sushil Harsana · **Module:** `github.com/sushil23harsana/ai-gateway`
-> (the Go module path keeps the original `ai-gateway` slug; the product is **Janus**)
+> 📖 **Full guide, live demo & examples:** <https://sushil23harsana.github.io/ai-gateway/>
 >
-> **Live site:** <https://sushil23harsana.github.io/ai-gateway/>
+> **Author:** Sushil Harsana · **Module:** `github.com/sushil23harsana/ai-gateway`
 
 ---
 
-## Status
+## What you get
 
-Built in independently runnable phases (see [BUILD.md](BUILD.md)). Per-phase
-notes — what each phase actually changed — live in [docs/](docs/README.md).
+| | Feature | What it does |
+|---|---------|--------------|
+| 🔑 | **Virtual API keys** | Mint scoped keys per team/service. Stored as SHA-256 hashes; raw key shown once. |
+| ⚡ | **Rate limiting** | Redis token-bucket per key. `429` + `Retry-After` on breach. |
+| 🗄️ | **Response caching** | Exact-match Redis cache (1.8s → ~4ms) + optional pgvector semantic cache for near-duplicate prompts. |
+| 💸 | **Cost & token analytics** | Per-model pricing config; tokens and USD tracked on every request, including SSE streams. |
+| 🔄 | **Multi-provider routing** | Native OpenAI + Anthropic. Routed by model name, with automatic cross-provider failover. |
+| 🛡️ | **Resilience** | Bounded retry with backoff + a per-provider circuit breaker (Closed → Open → Half-open). |
+| 💰 | **Monthly budgets** | Per-key spend caps enforced at the gateway (`402` when exceeded). |
+| 📊 | **Real-time dashboard** | Next.js console: spend, cache hit-rate, latency, per-key/model/provider breakdowns, live req/min, key management. |
+| ✅ | **Health & readiness** | `GET /healthz` (liveness) and `GET /readyz` (pings Redis + Postgres) for orchestrators. |
 
-- [x] **Phase 0 — Scaffold:** repo layout, Docker Compose (redis + postgres),
-      config loader (`slog`, graceful shutdown), DB migrations, `GET /healthz`.
-- [x] **Phase 1 — Pass-through proxy + observability:** `POST /v1/chat/completions`
-      → OpenAI (key injected server-side), async `request_logs` with tokens, cost, latency.
-- [x] **Phase 2 — Virtual keys + rate limiting:** admin API mints keys (hash stored,
-      raw shown once), Bearer auth on the proxy, Redis token-bucket limiter (429 + `Retry-After`).
-- [x] **Phase 3 — Response caching:** Redis exact-match cache (per-key scope, TTL,
-      per-key toggle); hits skip the provider (`cache_hit=true`, cost 0) — verified 1.8s → 4.8ms.
-- [x] **Phase 4 — Multi-provider + routing/failover:** `Provider` interface, native
-      Anthropic (OpenAI⇄Messages translation), model routing, 5xx/timeout failover,
-      plus **upstream resilience** — bounded retry with backoff + a per-provider
-      circuit breaker (see [docs/resilience.md](docs/resilience.md)).
-      *(Live-verified 2026-06-16: real Claude completion + correct cost, forced-outage
-      failover OpenAI→Anthropic, and the full breaker open→half-open→re-open cycle.)*
-- [x] **Phase 5 — Next.js dashboard:** `/admin/stats/*` Go API + Redis live counter,
-      and a Next.js 14 + Recharts console (overview tiles, spend/cost charts, per-key
-      budgets, live req/min) at `:3000` — renders real traffic.
-- [x] **Phase 6 — Semantic caching:** pgvector + OpenAI embeddings serve near-duplicate
-      prompts (`X-Cache: SEMANTIC`), with a calibrated threshold that rejects different-answer
-      lookalikes. *(Stretch since done: per-key budget enforcement + a k6 cache-hit load test. SSE token accounting still remains.)*
-- [x] **Phase 7 — Control plane:** create/edit/disable/delete virtual keys from the dashboard
-      via token-safe, same-origin write routes (admin token never reaches the browser) + a
-      gateway write-guard; secure-by-default packaging (loopback-only ports). See [docs/security.md](docs/security.md).
+---
+
+## How a request flows
+
+Every call to `POST /v1/chat/completions` passes this pipeline:
+
+1. **Auth** — Bearer virtual key is SHA-256 hashed and matched against `api_keys`. Unknown → `401`.
+2. **Budget gate** — month's spend (Redis) vs the key's `monthly_budget_usd`. Over budget → `402`.
+3. **Rate limit** — Redis token-bucket per key. Exceeded → `429` + `Retry-After`.
+4. **Cache lookup** — exact Redis match (`X-Cache: HIT`), then semantic pgvector match (`X-Cache: SEMANTIC`). Hits skip the provider and cost $0.
+5. **Provider routing + resilience** — model name selects the provider; transient failures are retried; a tripped circuit breaker triggers failover.
+6. **Async logging** — tokens, cost, latency, model, cache status written via a buffered channel + worker pool, off the response path.
 
 ---
 
@@ -54,22 +53,23 @@ notes — what each phase actually changed — live in [docs/](docs/README.md).
 
 ```
                 ┌────────────────────────────────────────────────┐
-   client       │                 AI GATEWAY (Go)                 │
+   client       │                 JANUS GATEWAY (Go)              │
  (virtual key)  │                                                 │
-  ───────────►  │  1 auth virtual key   2 rate limit (Redis TB)   │
-                │  3 cache lookup (Redis)                         │     ┌──────────┐
-                │  4 on miss → provider router ───────────────────┼───► │ OpenAI / │
-                │  5 parse usage → cost → async log               │ ◄───┤ Anthropic│
-                │  6 store cache   7 stream/return response       │     └──────────┘
+  ───────────►  │  1 auth   2 budget   3 rate limit (Redis TB)    │
+                │  4 cache lookup (Redis + pgvector)              │     ┌──────────┐
+                │  5 router + retry/breaker ──────────────────────┼───► │ OpenAI / │
+                │  6 parse usage → cost → async log               │ ◄───┤ Anthropic│
+                │  7 stream / return response                     │     └──────────┘
                 └───────┬───────────────────────────┬─────────────┘
                         │ writes                     │ reads
                         ▼                            ▼
                    PostgreSQL                     Redis  ◄──── /admin/stats
-                 (request_logs)               (counters, cache)
+            (request_logs, api_keys,        (counters, cache,
+                  pgvector cache)            spend tracking)
 ```
 
-The proxy path is kept non-blocking: logging and metric writes go through a
-buffered channel + worker pool (Phase 1), never inline on the response.
+The proxy path is non-blocking: logging and metric writes go through a buffered
+channel + worker pool, never inline on the response.
 
 ---
 
@@ -77,73 +77,251 @@ buffered channel + worker pool (Phase 1), never inline on the response.
 
 ### Run from pre-built images (just Docker — no clone, no build)
 
-Images are published to GHCR on every push to `main`. Grab the prod compose
-file and an env template, then bring it up:
+Images are published to GHCR. Grab the prod compose file + an env template:
 
 ```bash
 curl -O https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/docker-compose.prod.yml
 curl -o .env https://raw.githubusercontent.com/sushil23harsana/ai-gateway/main/.env.example
-# edit .env — add OPENAI_API_KEY and/or ANTHROPIC_API_KEY, set ADMIN_TOKEN
+# edit .env — add OPENAI_API_KEY and/or ANTHROPIC_API_KEY, set a strong ADMIN_TOKEN
 
 docker compose -f docker-compose.prod.yml up -d
 ```
 
 This pulls `ghcr.io/sushil23harsana/ai-gateway` (+ the dashboard image), runs DB
 migrations once, and starts everything. Pin a version with
-`GATEWAY_IMAGE=ghcr.io/sushil23harsana/ai-gateway:vX.Y.Z`; the default tracks
-`latest`.
+`GATEWAY_IMAGE=ghcr.io/sushil23harsana/ai-gateway:vX.Y.Z`; the default tracks `latest`.
 
 ### Build from source (developers)
 
 ```bash
 git clone https://github.com/sushil23harsana/ai-gateway.git && cd ai-gateway
-cp .env.example .env        # then fill in provider keys as you reach Phase 1+
+cp .env.example .env        # then fill in provider key(s)
 docker compose up -d --build
 ```
 
-Either path starts Redis, Postgres, the gateway, and the dashboard (and runs DB
-migrations once). Verify the health endpoint:
+Either path starts Redis, Postgres, the gateway (`:8080`), and the dashboard
+(`:3000`). Verify health:
 
 ```bash
-curl -i http://localhost:8080/healthz
-# HTTP/1.1 200 OK
-# {"status":"ok"}
+curl http://localhost:8080/healthz     # → {"status":"ok"}
+curl http://localhost:8080/readyz      # → {"status":"ready","checks":{...}}
 ```
 
-Then open the **dashboard** at <http://localhost:3000> for cost, cache, latency,
-and per-key analytics.
+Open the dashboard at <http://localhost:3000>. Tear down with
+`docker compose down` (add `-v` to drop the Postgres volume).
 
-Tear down with `docker compose down` (add `-v` to also drop the Postgres volume).
+### Mint a virtual key
 
-### Running locally (without Docker for the app)
-
-You still need Redis and Postgres. Start just the infra, then run the gateway on
-the host:
+From the dashboard's **API Keys** page, or via the admin API:
 
 ```bash
-docker compose up -d redis postgres
-go run ./cmd/migrate     # apply migrations
-go run ./cmd/gateway     # serve on :8080
+curl -X POST http://localhost:8080/admin/keys \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-app","rate_limit_rpm":60,"monthly_budget_usd":10}'
 ```
 
-> **Deploying beyond your laptop?** See [docs/deploy.md](docs/deploy.md) and read
-> [docs/security.md](docs/security.md) first.
+The response includes the raw key (`sk-gw-…`) — save it, it's shown only once.
+
+---
+
+## Supported models
+
+Pass any of these as the `model` field — Janus routes to the right provider
+automatically. Prices live in [`pricing.yaml`](pricing.yaml) and can change
+without a rebuild.
+
+| Model | Provider | $/1M tokens (in / out) | Note |
+|-------|----------|------------------------|------|
+| `gpt-4o-mini` | OpenAI | $0.15 / $0.60 | Cheapest — ideal for testing |
+| `gpt-4o` | OpenAI | $2.50 / $10.00 | |
+| `claude-haiku-4-5` | Anthropic | $1.00 / $5.00 | Cheapest Anthropic |
+| `claude-sonnet-4-6` | Anthropic | $3.00 / $15.00 | |
+| `claude-opus-4-8` | Anthropic | $5.00 / $25.00 | Most capable |
+
+OpenAI models need `OPENAI_API_KEY`; Anthropic models need `ANTHROPIC_API_KEY`.
+
+---
+
+## Usage
+
+The gateway is a drop-in OpenAI API — same endpoint shape, virtual key as the
+Bearer token. Switch providers by changing only the `model` name.
+
+### curl
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-gw-your-virtual-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+### Python (openai SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-gw-your-virtual-key",
+)
+
+# OpenAI
+print(client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Explain backpressure in 2 sentences."}],
+).choices[0].message.content)
+
+# Anthropic — same client, just change the model name
+print(client.chat.completions.create(
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "Explain backpressure in 2 sentences."}],
+).choices[0].message.content)
+```
+
+### Streaming (Python)
+
+```python
+stream = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Write a haiku about distributed systems."}],
+    stream=True,
+)
+for chunk in stream:
+    delta = chunk.choices[0].delta.content
+    if delta:
+        print(delta, end="", flush=True)
+```
+
+### LangChain (Python)
+
+Any LangChain integration that accepts a `base_url` works unchanged — Janus
+speaks the OpenAI format.
+
+```python
+# pip install langchain-openai
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_key="sk-gw-your-virtual-key",
+    openai_api_base="http://localhost:8080/v1",   # ← point at Janus
+)
+print(llm.invoke([HumanMessage(content="What is a circuit breaker in software?")]).content)
+```
+
+LCEL chain (the second identical call returns from the Janus cache, `$0`):
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,
+                 openai_api_key="sk-gw-your-virtual-key",
+                 openai_api_base="http://localhost:8080/v1")
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a concise technical writer."),
+    ("human",  "Summarise {topic} in one paragraph."),
+])
+chain = prompt | llm | StrOutputParser()
+print(chain.invoke({"topic": "Redis Streams"}))
+print(chain.invoke({"topic": "Redis Streams"}))   # → cache hit
+```
+
+### LangChain (JavaScript / TypeScript)
+
+```typescript
+// npm install @langchain/openai @langchain/core
+import { ChatOpenAI } from "@langchain/openai";
+import { HumanMessage } from "@langchain/core/messages";
+
+const llm = new ChatOpenAI({
+  modelName:    "gpt-4o-mini",
+  openAIApiKey: "sk-gw-your-virtual-key",
+  configuration: { baseURL: "http://localhost:8080/v1" },
+});
+const res = await llm.invoke([new HumanMessage("What is the capital of France?")]);
+console.log(res.content);
+```
+
+> Any OpenAI-compatible client works the same way — openai-python, openai-node,
+> LangChain, LlamaIndex, AutoGen, CrewAI — just point `base_url` at
+> `http://<gateway-host>:8080/v1` and use a virtual key.
 
 ---
 
 ## Dashboard
 
-A Next.js console at <http://localhost:3000>: overview tiles (spend, cache
-hit-rate, latency), spend/cost charts, per-provider and per-model breakdowns,
-live requests/min, recent requests, and an **API Keys** page to create, edit,
-disable, and delete virtual keys — with the admin token kept server-side
-(see [docs/security.md](docs/security.md)).
+A Next.js console at <http://localhost:3000> with five pages:
 
-> 📸 **Screenshot:** capture your running dashboard, save it to
-> `docs/assets/dashboard.png`, and add `![Janus dashboard](docs/assets/dashboard.png)`
-> here. It needs your own traffic, so it's a quick step on your machine — see
-> [docs/assets/README.md](docs/assets/README.md). For a visual right now, the
-> [live site](https://sushil23harsana.github.io/ai-gateway/) shows the product.
+- **Overview** — spend (month/today), requests + tokens, cache hit-rate, P95/P50 latency, spend-over-time chart, by-provider / by-model breakdowns, live req/min, per-key spend vs budget.
+- **Routing** — model → provider mapping and failover configuration.
+- **Live Logs** — individual requests as they happen.
+- **Caches** — exact + semantic hit-rate, stored embeddings, recent semantic entries.
+- **API Keys** — create, edit, disable, and delete virtual keys (budget, RPM, cache toggle).
+
+The admin token is kept server-side, so the browser never sees it.
+
+---
+
+## Configuration
+
+All config is via environment variables (12-factor); see
+[.env.example](.env.example). Pricing lives in [pricing.yaml](pricing.yaml).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | — | OpenAI secret (server-side only). |
+| `ANTHROPIC_API_KEY` | — | Anthropic secret (server-side only). |
+| `ADMIN_TOKEN` | `change-me` | Guards `/admin/*`. Set a strong value for production. |
+| `PORT` | `8080` | Gateway listen port. |
+| `DEFAULT_PROVIDER` | `openai` | Provider when not determinable by model name. |
+| `FAILOVER_ENABLED` | `true` | Auto-failover to the other provider on 5xx / timeout. |
+| `CACHE_TTL_SECONDS` | `3600` | Exact-match cache TTL. |
+| `CACHE_SCOPE` | `key` | `key` (per-virtual-key) or `global` (shared). |
+| `BUDGET_ENFORCED` | `true` | Enforce per-key monthly budget caps. |
+| `RETRY_MAX_ATTEMPTS` | `3` | Attempts per provider (1 = no retry). |
+| `BREAKER_ENABLED` | `true` | Per-provider circuit breaker. |
+| `BREAKER_THRESHOLD` | `5` | Consecutive failures that open a breaker. |
+| `SEMANTIC_CACHE_ENABLED` | `false` | pgvector semantic cache (needs `OPENAI_API_KEY` for embeddings). |
+| `SEMANTIC_THRESHOLD` | `0.25` | Max cosine distance for a hit (smaller = stricter). |
+
+---
+
+## Security
+
+- Provider keys are **server-side only** — never logged or returned.
+- Virtual keys are stored as **SHA-256 hashes**; the raw key is shown once.
+- `/admin/*` and stats are guarded by `ADMIN_TOKEN` (constant-time compare); the
+  dashboard holds the token server-side.
+- **Writes are blocked while `ADMIN_TOKEN` is the default `change-me`.**
+- Docker ports bind to `127.0.0.1` only (loopback) by default.
+
+**Before exposing beyond localhost:** set a strong `ADMIN_TOKEN`
+(`openssl rand -hex 32`), and put the control plane behind an authenticating
+reverse proxy with TLS. See [docs/security.md](docs/security.md).
+
+---
+
+## API reference
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/chat/completions` | The proxy. OpenAI-compatible. Auth via virtual key. |
+| `GET` | `/healthz` | Liveness (process up). |
+| `GET` | `/readyz` | Readiness (pings Redis + Postgres). |
+| `POST` | `/admin/keys` | Mint a key: `name`, `rate_limit_rpm`, `monthly_budget_usd`, `cache_enabled`. |
+| `GET` | `/admin/keys` | List keys. |
+| `PATCH` | `/admin/keys/{id}` | Update a key (rename, rpm, budget, cache, disable). |
+| `DELETE` | `/admin/keys/{id}` | Delete a key. |
+| `GET` | `/admin/stats/*` | overview · timeseries · by-model · by-provider · by-key · recent · cache · live. |
+
+**Proxy status codes:** `200` ok · `401` invalid key · `402` budget exceeded ·
+`429` rate limited (`Retry-After`) · `502` upstream error · `503` breaker open.
+**Cache header:** `X-Cache: MISS | HIT | SEMANTIC`.
 
 ---
 
@@ -151,17 +329,17 @@ disable, and delete virtual keys — with the admin token kept server-side
 
 A `Makefile` wraps the common tasks (`make help` lists them):
 
-| Make target  | What it does                                   | Raw command |
-|--------------|------------------------------------------------|-------------|
-| `make dev` / `make up` | Bring up the full stack            | `docker compose up -d --build` |
-| `make down`  | Stop everything                                | `docker compose down` |
-| `make migrate` | Apply DB migrations                          | `go run ./cmd/migrate` |
-| `make test`  | Run unit tests                                 | `go test ./...` |
-| `make build` | Build `gateway` + `migrate` binaries           | `go build ./cmd/...` |
-| `make run`   | Run the gateway locally                        | `go run ./cmd/gateway` |
+| Make target | What it does | Raw command |
+|-------------|--------------|-------------|
+| `make dev` / `make up` | Bring up the full stack | `docker compose up -d --build` |
+| `make down` | Stop everything | `docker compose down` |
+| `make migrate` | Apply DB migrations | `go run ./cmd/migrate` |
+| `make test` | Run unit tests | `go test ./...` |
+| `make build` | Build the binaries | `go build ./cmd/...` |
+| `make run` | Run the gateway locally | `go run ./cmd/gateway` |
 
-> **Windows note:** `make` isn't installed by default. Use the raw commands in
-> the right-hand column (e.g. `docker compose up -d --build`, `go test ./...`).
+> **Windows:** `make` isn't installed by default — use the raw commands in the
+> right-hand column.
 
 ---
 
@@ -169,29 +347,27 @@ A `Makefile` wraps the common tasks (`make help` lists them):
 
 ```
 ai-gateway/
-├── cmd/
-│   ├── gateway/      # HTTP server entrypoint (config, slog, graceful shutdown, /healthz)
-│   └── migrate/      # tiny forward-only SQL migration runner
+├── cmd/gateway/      # HTTP server entrypoint
+├── cmd/migrate/      # forward-only SQL migration runner
 ├── internal/
+│   ├── proxy/        # the request pipeline
+│   ├── providers/    # OpenAI + Anthropic adapters, router
+│   ├── cache/        # exact (Redis) + semantic (pgvector) caches
+│   ├── ratelimit/    # Redis token-bucket
+│   ├── budget/       # per-key monthly spend caps
+│   ├── resilience/   # retry + circuit breaker
+│   ├── keys/         # virtual-key auth
+│   ├── api/          # admin + stats endpoints
+│   ├── metrics/      # async request logger, live counter
+│   ├── store/        # PostgreSQL access
 │   └── config/       # env + pricing.yaml loader
+├── dashboard/        # Next.js 14 console
 ├── migrations/       # *.up.sql / *.down.sql
-├── pricing.yaml      # per-model $/1K tokens (verify against current pricing!)
-├── docker-compose.yml
-├── Dockerfile
-├── .env.example
-├── Makefile
-└── BUILD.md          # full build spec
+├── pricing.yaml      # per-model $/1K tokens
+├── docker-compose.yml          # build-from-source
+├── docker-compose.prod.yml     # run pre-built GHCR images
+└── docs/             # per-area docs (security, resilience, deploy, …)
 ```
 
-Later phases fill in `internal/proxy`, `internal/providers`, `internal/cache`,
-`internal/ratelimit`, `internal/keys`, `internal/store`, `internal/metrics`,
-`internal/api`, and `dashboard/`.
-
----
-
-## Configuration
-
-All config comes from the environment (12-factor); see [.env.example](.env.example).
-Model pricing lives in [pricing.yaml](pricing.yaml) so it can change without a
-rebuild. Secrets (provider keys) are server-side only and are never logged or
-returned to callers; virtual keys are stored as SHA-256 hashes.
+Built by [Sushil Harsana](https://github.com/sushil23harsana). The Go module
+path keeps the original `ai-gateway` slug; the product is **Janus**.
