@@ -87,5 +87,5 @@ curl -i https://api.example.com/healthz       # -> 200 {"status":"ok"}
 Then mint a virtual key (dashboard → API Keys, or `POST /admin/keys`) and point an
 app's `base_url` at `https://api.example.com/v1`.
 
-> Janus stays **self-hosted by design** (BUILD.md §9 rules out a hosted SaaS); this
-> guide is about running *your own* instance well, not operating it for others.
+> Janus stays **self-hosted by design** (there is no hosted SaaS); this guide is
+> about running *your own* instance well, not operating it for others.

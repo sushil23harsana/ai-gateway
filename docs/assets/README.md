@@ -27,5 +27,5 @@ done
 3. Open <http://localhost:3000>, screenshot the overview (and/or the Keys page),
    and save it here as `dashboard.png`.
 
-This is the one BUILD.md §8 item that needs a real running instance — it can't be
+This is the one screenshot that needs a real running instance — it can't be
 faked, so it's left for you to capture from your own data.

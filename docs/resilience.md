@@ -8,7 +8,7 @@ minute (or bad hour) doesn't become your outage:
    fast when it's persistently down — which lets failover kick in instantly
    instead of every request paying the full timeout.
 
-These compose with the existing [multi-provider failover](phase-4.md): retry →
+These compose with the existing multi-provider failover: retry →
 breaker → failover, in that order. Code: [internal/resilience/](../internal/resilience/),
 wired in [internal/proxy/handler.go](../internal/proxy/handler.go).
 

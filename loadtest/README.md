@@ -1,7 +1,7 @@
 # Load test
 
 A small [k6](https://k6.io/) script that measures Janus's own overhead on the
-**cache-hit path** — the repeatable, zero-cost way to check the BUILD.md §8 bar
+**cache-hit path** — the repeatable, zero-cost way to check the latency bar
 ("cache hits return in < 10 ms"). It sends one fixed prompt, so after a single
 warm-up call every request is a cache hit and **no provider tokens are spent**.
 

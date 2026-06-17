@@ -1,6 +1,6 @@
 // k6 load test for Janus — measures the gateway's own overhead on the cache-hit
 // path (auth → rate-limit → cache lookup → serve), which is the cheap, repeatable
-// way to validate the BUILD.md §8 bar: cache hits return in < 10 ms. It sends one
+// way to validate the latency bar: cache hits return in < 10 ms. It sends one
 // fixed prompt, so after a single warm-up call every request is a cache hit and no
 // provider tokens are spent.
 //
